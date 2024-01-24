@@ -1,58 +1,51 @@
 use std::collections::HashMap;
+use serde::Serialize;
+
+mod io;
+
+pub type MetaMap = HashMap<String, Vec<String>>;
 
 fn main() {
-    let meta = io::load("C:\\Users\\matab\\Downloads\\2023-10 Practice.note").unwrap();
-    println!("{:?}", meta.items);
+    let meta = io::load("./test/v15.note").unwrap();
+    if let Ok(json) = serde_json::to_string_pretty(&meta) {
+        println!("{}", &json);
+        use std::fs::File;
+        use std::io::Write;
+        if let Ok(mut f) = File::create("./test/out.json") {
+            let _ = f.write(json.as_bytes());
+        }
+    }
 }
 
+#[derive(Serialize)]
 pub struct Metadata {
-    items: HashMap<String, Vec<String>>,
+    pub version: u32,
+    pub footer: Footer,
+    pub header: MetaMap,
+    pub pages: Vec<PageMeta>,
 }
 
-mod io {
-    //! Loads the data and metadata
-    
-    mod file_format {
-       //! Contains the variables and data needed to read the *.note file.
-       
-       pub const SUPPORTED_VERSION: u32 = 20230015;
-    }
-    
-    use std::collections::HashMap;
-    use std::io::{self, prelude::*, SeekFrom};
-    use std::fs::File;
-    use crate::Metadata;
+#[derive(Serialize, Default)]
+pub struct Footer {
+    pub main: MetaMap,
+    pub keywords: Option<Vec<MetaMap>>,
+    pub titles: Option<Vec<MetaMap>>,
+    pub links: Option<Vec<MetaMap>>,
+}
 
-    /// Loads
-    pub fn load(path: &str) -> io::Result<Metadata> {
-        let mut file = File::open(path)?;
+/// It's the data containg a single page.
+#[derive(Serialize)]
+pub struct PageMeta {
+    pub page_info: MetaMap,
+    pub layers: Vec<MetaMap>,
+}
 
-        let version = read_file_version(&mut file)?;
-
-        if let Some(v) = version {
-            if v > file_format::SUPPORTED_VERSION {
-                return Err(io::ErrorKind::InvalidInput.into());
-            }
-        }
-
-        Ok(Metadata { items: HashMap::new() })
+impl Footer {
+    pub fn new(f: MetaMap, keywords: Option<Vec<MetaMap>>, titles: Option<Vec<MetaMap>>, links: Option<Vec<MetaMap>>) -> Self {
+        Footer { main: f, keywords, titles, links }
     }
 
-    fn read_file_version(file: &mut File) -> io::Result<Option<u32>> {
-        file.seek(SeekFrom::Start(16))?;
-        let mut buf = [0; 8];
-        if file.read(&mut buf)? < buf.len() {
-            todo!("File has less than {} bytes", buf.len())
-        }
-
-        let version = match std::str::from_utf8(&buf) {
-            Ok(s) => s.parse(),
-            Err(err) => todo!("Found error when parsing version number at start of file {:?}", err),
-        };
-
-        match version {
-            Ok(v) => Ok(Some(v)),
-            Err(_) => Ok(None),
-        }
+    pub fn get(&self, k: &str) -> Option<&Vec<String>> {
+        self.main.get(k)
     }
 }
