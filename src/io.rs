@@ -6,7 +6,7 @@ use std::fs::File;
 use byteorder::{LittleEndian, ReadBytesExt};
 use regex::Regex;
 
-use crate::{Metadata, Footer, MetaMap, PageMeta};
+use crate::{MetaMap, data_structures::*};
 
 mod f_fmt {
    //! It's the file format information.
@@ -34,49 +34,8 @@ const LAYER_KEYS: [&str; 5] = ["MAINLAYER", "LAYER1", "LAYER2", "LAYER3", "BGLAY
 /// Loads
 pub fn load(path: &str) -> io::Result<Metadata> {
     let mut file = File::open(path)?;
-
-    let version = match read_file_version(&mut file)? {
-        Some(v) => if v > f_fmt::SUPPORTED_VERSION {
-            return Err(io::ErrorKind::InvalidInput.into());
-        } else {
-            v
-        },
-        None => return Err(io::ErrorKind::InvalidInput.into()),
-    };
-
-    // Parse the footer, it's address is on the last address of memory.
-    file.seek(SeekFrom::End(-(f_fmt::ADDR_SIZE as i64)))?;
-    let footer_addr = file.read_u32::<LittleEndian>()? as u64;
     
-    // Might need to have more robust checks if there are no metadata found
-    // at the address
-    let footer = match parse_meta_block(&mut file, footer_addr)? {
-        Some(f) => f,
-        None => return Err(io::ErrorKind::InvalidData.into()),
-    };
-
-    let keywords_meta = get_all_meta_on_keyword(&mut file, &footer, "KEYWORD_");
-
-    let titles_meta = get_all_meta_on_keyword(&mut file, &footer, "TITLE_");
-
-    let links_meta = get_all_meta_on_keyword(&mut file, &footer, "LINK");
-
-    let footer = Footer::new(footer, keywords_meta, titles_meta, links_meta);
-
-    // Series of unwraps, if reading the right file should be fine
-    let header_addr: u64 = footer.get("FILE_FEATURE").unwrap().first().unwrap().parse().unwrap();
-    let header = match parse_meta_block(&mut file, header_addr)? {
-        Some(h) => h,
-        None => return Err(io::ErrorKind::InvalidData.into()),
-    };
-
-    let page_addrs = match get_keyword_addresses(&footer.main, "PAGE"){
-        Some(p) => p,
-        None => return Err(io::ErrorKind::InvalidData.into()),
-    };
-    let pages = parse_pages(&mut file, page_addrs)?;
-
-    Ok(Metadata { version, footer, header, pages })
+    Metadata::from_file(&mut file)
 }
 
 /// Looks at the beggining of the file where the file version should be.
@@ -118,12 +77,7 @@ fn read_file_version(file: &mut File) -> io::Result<Option<u32>> {
 /// # Panics
 /// Can occur if the regex used to search kewyords cannot be created.
 fn parse_meta_block(file: &mut File, addr: u64) -> io::Result<Option<MetaMap>> {
-    file.seek(SeekFrom::Start(addr))?;
-    let block_size = file.read_u32::<LittleEndian>()?;
-    // Could use Vec::with_capactiy and the unsafe set_len for possibly quicker
-    // performance. But it's unsafe
-    let mut meta = vec![0; block_size as usize];
-    file.read_exact(&mut meta)?;
+    let meta = get_content_at_address(file, addr)?;
     let meta = String::from_utf8_lossy(&meta);
     
     let regex = match Regex::new(r"<([^:<>]+):([^:<>]*)>") {
@@ -215,6 +169,27 @@ fn parse_pages(file: &mut File, addrs: Vec<f_fmt::AddrType>) -> io::Result<Vec<P
     Ok(pages)
 }
 
+/// Reads the a block of data at addr.
+/// 
+/// # Error
+/// 
+/// It will error when there's an [io::Error] reading the file or 
+/// 
+/// # Returns
+/// It returns a block
+fn get_content_at_address(file: &mut File, addr: u64) -> io::Result<Vec<u8>> {
+    if addr == 0 {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "Read address was 0"));
+    }
+    file.seek(SeekFrom::Start(addr))?;
+    let block_size = file.read_u32::<LittleEndian>()?;
+    // Could use Vec::with_capactiy and the unsafe set_len for possibly quicker
+    // performance. But it's unsafe
+    let mut data = vec![0; block_size as usize];
+    file.read_exact(&mut data)?;
+    Ok(data)
+}
+
 // #######################################################################
 // #######################################################################
 // ########################### IMPLEMENTATIONS ###########################
@@ -222,23 +197,79 @@ fn parse_pages(file: &mut File, addrs: Vec<f_fmt::AddrType>) -> io::Result<Vec<P
 // #######################################################################
 
 impl Footer {
-    pub fn from_file(file: &mut File) -> io::Result<Option<Self>> {
-        let mut addr_buf = [0; f_fmt::ADDR_SIZE as usize];
+    pub fn from_file(file: &mut File) -> io::Result<Self> {
         // Parse the footer, it's address is on the last address of memory.
         file.seek(SeekFrom::End(-(f_fmt::ADDR_SIZE as i64)))?;
-        file.read_exact(&mut addr_buf)?;
-        let footer_addr = match std::str::from_utf8(&addr_buf).unwrap().parse() {
-            Ok(n) => n,
-            Err(e) => todo!("Couldn't parse the footer address due to: {}", e),
-        };
-        let footer = parse_meta_block(file, footer_addr)?;
+        let footer_addr = file.read_u32::<LittleEndian>()? as u64;
         
-        Ok(footer.map(|footer| {
-            let keywords_meta = get_all_meta_on_keyword(file, &footer, "KEYWORD_");
-            let titles_meta = get_all_meta_on_keyword(file, &footer, "TITLE_");
-            let links_meta = get_all_meta_on_keyword(file, &footer, "LINK");
+        // Might need to have more robust checks if there are no metadata found
+        // at the address
+        let footer = match parse_meta_block(file, footer_addr)? {
+            Some(f) => f,
+            None => return Err(io::ErrorKind::InvalidData.into()),
+        };
 
-            Footer { main: footer, keywords: keywords_meta, titles: titles_meta, links: links_meta }
-        }))
+        let keywords_meta = get_all_meta_on_keyword(file, &footer, "KEYWORD_");
+
+        let titles_meta = get_all_meta_on_keyword(file, &footer, "TITLE_");
+
+        let links_meta = get_all_meta_on_keyword(file, &footer, "LINK");
+
+        Ok(Footer::new(footer, keywords_meta, titles_meta, links_meta))
+    }
+}
+
+impl Metadata {
+    pub fn from_file(file: &mut File) -> io::Result<Self> {
+        let version = match read_file_version(file)? {
+            Some(v) => if v > f_fmt::SUPPORTED_VERSION {
+                return Err(io::ErrorKind::InvalidInput.into());
+            } else {
+                v
+            },
+            None => return Err(io::ErrorKind::InvalidInput.into()),
+        };
+
+        let footer = Footer::from_file(file)?;
+
+        // Series of unwraps, if reading the right file should be fine
+        let header_addr: u64 = footer.get("FILE_FEATURE").unwrap().first().unwrap().parse().unwrap();
+        let header = match parse_meta_block(file, header_addr)? {
+            Some(h) => h,
+            None => return Err(io::ErrorKind::InvalidData.into()),
+        };
+
+        let page_addrs = match get_keyword_addresses(&footer.main, "PAGE"){
+            Some(p) => p,
+            None => return Err(io::ErrorKind::InvalidData.into()),
+        };
+        let pages = parse_pages( file, page_addrs)?;
+
+        Ok(Metadata { version, footer, header, pages })
+    }
+}
+
+impl Notebook {
+    pub fn from_file(file: &mut File) -> io::Result<Self> {
+        let metadata = Metadata::from_file(file)?;
+        let version = metadata.version;
+        let mut keywords = Keyword::get_vec_from_meta(&metadata);
+        todo!("Still need to work on the keywords");
+        let mut titles = Title::get_vec_from_meta(&metadata);
+        todo!("Still need to work on the titles");
+        let mut links = Link::get_vec_from_meta(&metadata);
+        todo!("Still need to work on the links");
+        let mut pages = Page::get_vec_from_meta(&metadata.pages);
+        todo!("Still need to work on the pages");
+
+
+        Ok(Notebook {
+            metadata,
+            version,
+            keywords,
+            titles,
+            links,
+            pages,
+        })
     }
 }
