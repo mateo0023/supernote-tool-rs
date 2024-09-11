@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 mod io;
 mod data_structures;
 

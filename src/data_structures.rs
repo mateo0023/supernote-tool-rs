@@ -1,7 +1,7 @@
 use std::fs::File;
 use std::io;
 
-use super::io::get_content_at_address;
+use super::io::extract_key_and_read;
 
 pub mod metadata;
 
@@ -11,17 +11,15 @@ use metadata::Metadata;
 /// 
 /// # ToDo!
 /// * Keyword
-/// * Title
 /// * Link
-/// * Page
 #[derive(Debug)]
 pub struct Notebook {
     /// Is the [Metadata] of the `.note` file
     pub metadata: Metadata,
     /// Is the version number, see [Metadata::version]
     pub version: u32,
-    /// A list containing all the [Keywords](Keyword)
-    pub keywords: Vec<Keyword>,
+    // /// A list containing all the [Keywords](Keyword)
+    // pub keywords: Vec<Keyword>,
     /// A list containing all the [Titles](Title)
     pub titles: Vec<Title>,
     /// A list containing all the [Links](Link)
@@ -43,14 +41,17 @@ pub struct Title {
     pub position: u32,
 }
 #[derive(Debug)]
-pub struct Link;
+pub struct Link {
+    pub metadata: metadata::MetaMap,
+    pub content: Option<Vec<u8>>,
+    pub page: Option<usize>,
+}
 #[derive(Debug)]
 pub struct Page {
     pub metadata: metadata::PageMeta,
-    pub content: Option<Vec<u8>>,
-    pub totalpath: Option<u32>,
-    pub recogn_file: Option<u32>,
-    pub recogn_text: Option<u32>,
+    pub totalpath: Option<Vec<u8>>,
+    pub recogn_file: Option<Vec<u8>>,
+    pub recogn_text: Option<Vec<u8>>,
     pub layers: Vec<Layer>,
 }
 
@@ -58,6 +59,14 @@ pub struct Page {
 pub struct Layer {
     pub metadata: metadata::MetaMap,
     pub content: Option<Vec<u8>>,
+}
+
+#[derive(Debug, Default)]
+pub enum LinkType {
+    #[default]
+    SameFile,
+    OtherFile,
+    WebLink,
 }
 
 
@@ -71,17 +80,20 @@ pub struct Layer {
 
 
 impl Notebook {
-    pub fn new(metadata: Metadata) -> Self {
+    pub fn new(metadata: Metadata, file: &mut File) -> io::Result<Self> {
         let version = metadata.version;
 
-        Notebook { 
+        let titles = Title::get_vec_from_meta(&metadata, file).unwrap();
+        let links = Link::get_vec_from_meta(&metadata, file);
+        let pages = Page::get_vec_from_meta(&metadata.pages, file);
+
+        Ok(Notebook { 
             metadata,
             version,
-            keywords: todo!(),
-            titles: todo!(),
-            links: todo!(),
-            pages: todo!(),
-        }
+            titles,
+            links,
+            pages,
+        })
     }
 }
 
@@ -127,17 +139,17 @@ impl Title {
     ///     content: Vec<u8>,
     ///     page_number: None,
     ///     position: u32,
-    /// }1
+    /// }
     /// ```
     pub fn from_meta(metadata: &metadata::MetaMap, file: &mut File) -> io::Result<Title> {
         // Very long chain with possible errors. But it should be fine as long as the file is properly formatted
         let page_pos = metadata.get("TITLERECTORI").unwrap().first().unwrap().split(',').nth(1).unwrap().parse().unwrap();
-        let bitmap_loc: u64 = metadata.get("TITLEBITMAP").unwrap().first().unwrap().parse().unwrap();
+        // let bitmap_loc: u64 = metadata.get("TITLEBITMAP").unwrap().first().unwrap().parse().unwrap();
         let page_index = metadata.get("PAGE_NUMBER").unwrap().first().unwrap().parse::<usize>().unwrap() - 1;
 
         Ok(Title { 
             metadata: metadata.clone(),
-            content: get_content_at_address(file, bitmap_loc)?,
+            content: extract_key_and_read(file, metadata, "TITLEBITMAP").unwrap(),
             page_index,
             position: page_pos,
         })
@@ -146,52 +158,62 @@ impl Title {
 
 impl Link {
     pub fn get_vec_from_meta(metadata: &Metadata, file: &mut File) -> Vec<Link> {
-        vec![]
+        match &metadata.footer.links {
+            Some(links) => links.iter().zip(Link::extract_page_numbers_from_meta(metadata).iter())
+                .map(|(link, &page_num)| Link {
+                    metadata: link.clone(),
+                    content: extract_key_and_read(file, link, "LINKBITMAP"),
+                    page: Some(page_num),
+                }).collect(),
+            None => vec![],
+        }
+    }
+
+    fn extract_page_numbers_from_meta(metadata: &Metadata) -> Vec<usize> {
+        metadata.footer.main.keys()
+            // Look only at those that start with "LINK" ie "LINKO_00020803014801651111"
+            .filter(|key| key.starts_with("LINK"))
+            // Get only the indices 6 through 9
+            // LINKO_00020803014801651111  =>  0002
+            .filter_map(|k| k.get(6..10))
+            // Parse that number into a `usize`
+            // Also parse the address (value) of where the metadata is located.
+            .filter_map(|k| 
+                k.parse::<usize>().ok().map(|page| page-1)
+            )
+            .collect()
     }
 }
 
 impl Page {
     /// Given al vector of [page metadata](metadata::PageMeta) it will return a vector of [pages](Page).
-    /// 
-    /// Due to not having access to the [file](std::fs::File), all the Page's field that are Options will be [None]:
-    /// * [Page::content]
-    /// * [Page::totalpath]
-    /// * [Page::recogn_file]
-    /// * [Page::recogn_text]
     pub fn get_vec_from_meta(metadata: &[metadata::PageMeta], file: &mut File) -> Vec<Page> {
-        metadata.iter().map(Page::from_meta).collect()
+        metadata.iter().map(|meta| Page::from_meta(meta, file)).collect()
     }
 
     /// Given a [PageMeta](metadata::PageMeta) it returns a [Page].
-    /// 
-    /// Due to not having access to the [file](std::fs::File), all the Options will be [None]:
-    /// * [Page::content]
-    /// * [Page::totalpath]
-    /// * [Page::recogn_file]
-    /// * [Page::recogn_text]
-    pub fn from_meta(metadata: &metadata::PageMeta) -> Self {
+    pub fn from_meta(metadata: &metadata::PageMeta, file: &mut File) -> Self {
         Page {
             metadata: metadata.clone(),
-            content: None,
-            totalpath: None,
-            recogn_file: None,
-            recogn_text: None,
-            layers: Layer::get_vec_fom_vec(&metadata.layers),
+            totalpath: extract_key_and_read(file, &metadata.page_info, "TOTALPATH"),
+            recogn_file: extract_key_and_read(file, &metadata.page_info, "RECOGNFILE"),
+            recogn_text: extract_key_and_read(file, &metadata.page_info, "RECOGNTEXT"),
+            layers: Layer::get_vec_fom_vec(&metadata.layers, file),
         }
     }
 }
 
 impl Layer {
     /// Given a vector of layer [metadata](metadata::MetaMap), it retrns a vector of [Layer].
-    pub fn get_vec_fom_vec(layers: &[metadata::MetaMap]) -> Vec<Self> {
-        layers.iter().map(Layer::from_meta).collect()
+    pub fn get_vec_fom_vec(layers: &[metadata::MetaMap], file: &mut File) -> Vec<Self> {
+        layers.iter().map(|meta| Layer::from_meta(meta, file)).collect()
     }
 
-    /// Creates a layer purely by cloning [meta](metadata::MetaMap) and keeping [content](Layer::content) as [None].
-    pub fn from_meta(meta: &metadata::MetaMap) -> Self {
+    /// Creates a layer purely by cloning [meta](metadata::MetaMap) and reading the [contents](Layer::content) with [extract_key_and_read].
+    pub fn from_meta(meta: &metadata::MetaMap, file: &mut File) -> Self {
         Layer {
             metadata: meta.clone(),
-            content: None,
+            content: extract_key_and_read(file, meta, "LAYERBITMAP"),
         }
     }
 }

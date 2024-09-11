@@ -73,16 +73,6 @@ pub mod f_fmt {
                 | Keyword::Link => key[6..10].to_string(),
                 Keyword::Page => key[4..].to_string(),
             }
-
-            // match key.starts_with(self.as_str()) {
-            //     true => Some(match self {
-            //         Keyword::Keyword => todo!(),
-            //         Keyword::Title
-            //         | Keyword::Link => key[6..10].to_string(),
-            //         Keyword::Page => key[4..].to_string(),
-            //     }),
-            //     false => None,
-            // }
         }
 
         /// Calls [page_number_str](Self::page_number_str) removes one and returns as [usize] (failing if not properly parsed).
@@ -279,6 +269,13 @@ pub fn get_content_at_address(file: &mut File, addr: u64) -> io::Result<Vec<u8>>
     Ok(data)
 }
 
+/// Will get the keyword (`key`) at the [MetaMap] and then read the content at that address from the `file` ([File]).
+/// 
+/// Turns all errors into [None].
+pub fn extract_key_and_read(file: &mut File, meta: &MetaMap, key: &str) -> Option<Vec<u8>> {
+    meta.get(key).and_then(|str_v| str_v[0].parse::<u64>().ok()).and_then(|addr| get_content_at_address(file, addr).ok())
+}
+
 // #######################################################################
 // #######################################################################
 // ########################### IMPLEMENTATIONS ###########################
@@ -355,18 +352,16 @@ impl Notebook {
     pub fn from_file(file: &mut File) -> io::Result<Self> {
         let metadata = Metadata::from_file(file)?;
         let version = metadata.version;
-        let mut keywords = Keyword::get_vec_from_meta(&metadata, file);
-        todo!("Still need to work on the keywords");
-        let mut titles = Title::get_vec_from_meta(&metadata, file)?;
-        let mut links = Link::get_vec_from_meta(&metadata, file);
-        todo!("Still need to work on the links");
-        let mut pages = Page::get_vec_from_meta(&metadata.pages, file);
-        todo!("Still need to work on the pages");
+        // let mut keywords = Keyword::get_vec_from_meta(&metadata, file);
+        // todo!("Still need to work on the keywords");
+        let titles = Title::get_vec_from_meta(&metadata, file)?;
+        let links = Link::get_vec_from_meta(&metadata, file);
+        let pages = Page::get_vec_from_meta(&metadata.pages, file);
 
         Ok(Notebook {
             metadata,
             version,
-            keywords,
+            // keywords,
             titles,
             links,
             pages,
