@@ -5,13 +5,17 @@ use super::io::extract_key_and_read;
 
 pub mod metadata;
 
+pub mod file_format {
+    pub const PAGE_HEIGHT: usize = 1872;
+    pub const PAGE_WIDTH: usize = 1404;
+}
+
 use metadata::Metadata;
 
 /// Will contain all the necessary information from the Notebook
 /// 
 /// # ToDo!
 /// * Keyword
-/// * Link
 #[derive(Debug)]
 pub struct Notebook {
     /// Is the [Metadata] of the `.note` file
@@ -214,6 +218,18 @@ impl Layer {
         Layer {
             metadata: meta.clone(),
             content: extract_key_and_read(file, meta, "LAYERBITMAP"),
+        }
+    }
+
+    pub fn get_name(&self) -> Option<&str> {
+        self.metadata.get("LAYERNAME").map(|n| n[0].as_str())
+    }
+
+    pub fn is_background(&self) -> bool {
+        if let Some(name) = self.get_name() {
+            "BGLAYER".eq(name)
+        } else {
+            false
         }
     }
 }
