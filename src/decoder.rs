@@ -1,22 +1,25 @@
 //! This module contains all the necessary functions to render a Page into
 //! a SVG file and other vizualisation formats.
 
-const SPECIAL_LENGTH_MARKER: usize = 0xff;
+use crate::data_structures::file_format_consts::*;
+
+const SPECIAL_LENGTH_MARKER: u8 = 0xff;
 const SPECIAL_LENGTH: usize = 0x4000;
 const SPECIAL_LENGTH_FOR_BLANK: usize = 0x400;
+const EXPECTED_LEN: usize = PAGE_HEIGHT * PAGE_WIDTH * 4; // 4 bytes per pixel (RGBA)
 
 mod color {
     //! Holds the necessary Color items to keep
     //! the namespace clean.
     pub type Color = [u8; 4];
 
-    const            BLACK: Color = [0; 4];
-    const        DARK_GRAY: Color = [0x9d, 0x9d, 0x9d, 0];
-    const             GRAY: Color = [0xc9, 0xc9, 0xc9, 0];
-    const            WHITE: Color = [0xfe, 0xfe, 0xfe, 0];
+    const            BLACK: Color = [0, 0, 0, 0xff];
+    const        DARK_GRAY: Color = [0x9d, 0x9d, 0x9d, 0xff];
+    const             GRAY: Color = [0xc9, 0xc9, 0xc9, 0xff];
+    const            WHITE: Color = [0xfe, 0xfe, 0xfe, 0xff];
     const      TRANSPARENT: Color = [0xff, 0xff, 0xff, 0];
-    const DARK_GRAY_COMPAT: Color = [0x30, 0x30, 0x30, 0];
-    const      GRAY_COMPAT: Color = [0x50, 0x50, 0x50, 0];
+    const DARK_GRAY_COMPAT: Color = [0x30, 0x30, 0x30, 0xff];
+    const      GRAY_COMPAT: Color = [0x50, 0x50, 0x50, 0xff];
 
     /// The color Code that corresponds to BLACK
     const COLORCODE_BLACK: u8 = 0x61;
@@ -72,18 +75,22 @@ mod color {
         /// Maps the Supernote ColorCode to its corresponding Color
         /// 
         /// Defaults to [Black](Self::black).
-        pub fn get(&self, colorcode: u8) -> Color {
+        pub fn get(&self, colorcode: u8) -> Result<Color, super::DecoderError> {
             match colorcode {
-                COLORCODE_BLACK => self.black,
-                COLORCODE_BACKGROUND => self.transparent,
-                COLORCODE_DARK_GRAY => self.darkgray,
-                COLORCODE_GRAY => self.gray,
-                COLORCODE_WHITE => self.white,
-                COLORCODE_MARKER_BLACK => self.black,
-                COLORCODE_MARKER_DARK_GRAY => self.darkgray,
-                COLORCODE_MARKER_GRAY => self.gray,
-                _ => self.black,
+                COLORCODE_BLACK => Ok(self.black),
+                COLORCODE_BACKGROUND => Ok(self.transparent),
+                COLORCODE_DARK_GRAY => Ok(self.darkgray),
+                COLORCODE_GRAY => Ok(self.gray),
+                COLORCODE_WHITE => Ok(self.white),
+                COLORCODE_MARKER_BLACK => Ok(self.black),
+                COLORCODE_MARKER_DARK_GRAY => Ok(self.darkgray),
+                COLORCODE_MARKER_GRAY => Ok(self.gray),
+                _ => Err(super::DecoderError::UnknownColorCode(colorcode)),
             }
+        }
+
+        pub fn get_bytes(&self, colorcode: u8, length: usize) -> Result<Vec<u8>, super::DecoderError> {
+            Ok(self.get(colorcode)?.repeat(length))
         }
     }
 
@@ -104,67 +111,111 @@ mod color {
 
 pub use color::ColorMap;
 
-pub fn decode_data(data: &[u8], colormap: &ColorMap) -> Vec<u8> {
+#[derive(Debug)]
+pub enum DecoderError {
+    UncompressedLengthMismatch { actual: usize, expected: usize },
+    UnknownColorCode(u8),
+    DataEndedUnexpectedly,
+    // LengthOverflow,
+}
+
+impl std::fmt::Display for DecoderError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DecoderError::UncompressedLengthMismatch { actual, expected } => {
+                write!(
+                    f,
+                    "Uncompressed bitmap length = {}, expected = {}",
+                    actual, expected
+                )
+            }
+            DecoderError::UnknownColorCode(code) => write!(f, "Unknown color code: {:#04x}", code),
+            DecoderError::DataEndedUnexpectedly => write!(f, "Data ended unexpectedly"),
+            // DecoderError::LengthOverflow => write!(f, "Length overflow detected"),
+        }
+    }
+}
+
+impl std::error::Error for DecoderError {}
+
+pub fn decode_data(data: &[u8], colormap: &ColorMap) -> Result<Vec<u8>, DecoderError> {
+    const ALL_BLANK: bool = false;
+
     use std::collections::VecDeque;
-    use crate::data_structures::file_format::{PAGE_HEIGHT, PAGE_WIDTH};
 
-    const EXPECTED_LEN: usize = PAGE_HEIGHT * PAGE_WIDTH * 4;
+    let mut data_iter = data.iter();
+    let mut uncompressed = Vec::<u8>::with_capacity(EXPECTED_LEN);
 
-    let mut data = data.iter();
-
-    let mut uncompressed = Vec::<u8>::new();
-
-    let mut holder: Option<(u8, usize)> = None;
+    let mut holder: Option<(u8, u8)> = None;
     let mut queue: VecDeque<(u8, usize)> = VecDeque::with_capacity(4);
 
-    while let (Some(&colorcode), Some(&length)) = (data.next(), data.next()) {
+    while let Some(&colorcode) = data_iter.next() {
+        let length_byte = match data_iter.next() {
+            Some(&l) => l,
+            None => return Err(DecoderError::DataEndedUnexpectedly),
+        };
         let mut data_pushed = false;
-        let mut length = length as usize;
 
-        if let Some((prev_colorcode, mut prev_length)) = holder.take() {
+        if let Some((prev_colorcode, prev_length)) = holder.take() {
             if colorcode == prev_colorcode {
-                length = length + 1 + (((prev_length & 0x7f) + 1) << 7);
+                let length = 1 + (length_byte as usize)
+                    + (((prev_length & 0x7f) as usize + 1) << 7);
                 queue.push_back((colorcode, length));
                 data_pushed = true;
             } else {
-                prev_length = ((prev_length & 0x7f) + 1) << 7;
+                let prev_length = ((prev_length & 0x7f) as usize + 1) << 7;
                 queue.push_back((prev_colorcode, prev_length));
             }
         }
 
         if !data_pushed {
-            if length == SPECIAL_LENGTH_MARKER {
-                // We're working with blank (the one called without layers)
-                length = SPECIAL_LENGTH_FOR_BLANK;
+            if length_byte == SPECIAL_LENGTH_MARKER {
+                let length = if ALL_BLANK {
+                    SPECIAL_LENGTH_FOR_BLANK
+                } else {
+                    SPECIAL_LENGTH
+                };
                 queue.push_back((colorcode, length));
-            } else if length & 0x80 != 0 {
-                // To be processed next loop
-                holder = Some((colorcode, length));
+            } else if length_byte & 0x80 != 0 {
+                holder = Some((colorcode, length_byte));
+                // Held data will be processed in the next loop iteration
             } else {
-                length += 1;
+                let length = (length_byte as usize) + 1;
                 queue.push_back((colorcode, length));
             }
         }
 
         while let Some((colorcode, length)) = queue.pop_front() {
-            uncompressed.append(&mut colormap.get(colorcode).repeat(length));
-        }
-    }
-    
-    if let Some((colorcode, length)) = holder.take() {
-        let length = adjust_tail_length(length, uncompressed.len(), EXPECTED_LEN);
-        if length > 0 {
-            uncompressed.append(&mut colormap.get(colorcode).repeat(length));
+            let color_bytes = colormap.get_bytes(colorcode, length)?;
+            uncompressed.extend(color_bytes);
         }
     }
 
-    uncompressed
+    // Handle any remaining holder
+    if let Some((colorcode, length_byte)) = holder {
+        let length = adjust_tail_length(length_byte, uncompressed.len(), EXPECTED_LEN);
+        if length > 0 {
+            let color_bytes = colormap.get_bytes(colorcode, length)?;
+            uncompressed.extend(color_bytes);
+        }
+    }
+
+    // Check if uncompressed length matches expected length
+    if uncompressed.len() != EXPECTED_LEN {
+        return Err(DecoderError::UncompressedLengthMismatch {
+            actual: uncompressed.len(),
+            expected: EXPECTED_LEN,
+        });
+    }
+
+    // Return the uncompressed data, size, and bits per pixel
+    Ok(uncompressed)
 }
 
-fn adjust_tail_length(tail_length: usize, current_length: usize, total_length: usize) -> usize {
+fn adjust_tail_length(tail_length: u8, current_length: usize, total_length: usize) -> usize {
     let gap = total_length - current_length;
     for i in (0..8).rev() {
-        let l = ((tail_length & 0x7f) + 1) << i;
+        let l = ((tail_length & 0x7f) as usize + 1) << i;
         if l <= gap {
             return l;
         }

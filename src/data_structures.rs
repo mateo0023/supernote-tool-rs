@@ -5,7 +5,7 @@ use super::io::extract_key_and_read;
 
 pub mod metadata;
 
-pub mod file_format {
+pub mod file_format_consts {
     pub const PAGE_HEIGHT: usize = 1872;
     pub const PAGE_WIDTH: usize = 1404;
 }
