@@ -57,14 +57,6 @@ pub struct Footer {
 // ###########################################################################################################
 // ###########################################################################################################
 
-
-impl Metadata {
-    /// Simply calls `get` on the [Metadata::footer], see [MetaMap]
-    pub fn get(&self, k: &str) -> Option<&Vec<String>> {
-        self.footer.get(k)
-    }
-}
-
 impl Footer {
     pub fn new(f: MetaMap, keywords: Option<Vec<MetaMap>>, titles: Option<Vec<MetaMap>>, links: Option<Vec<MetaMap>>) -> Self {
         Footer { main: f, keywords, titles, links }

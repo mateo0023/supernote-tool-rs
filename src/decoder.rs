@@ -3,113 +3,25 @@
 
 use crate::data_structures::file_format_consts::*;
 
+const ALL_BLANK: bool = false;
+
 const SPECIAL_LENGTH_MARKER: u8 = 0xff;
 const SPECIAL_LENGTH: usize = 0x4000;
 const SPECIAL_LENGTH_FOR_BLANK: usize = 0x400;
 const EXPECTED_LEN: usize = PAGE_HEIGHT * PAGE_WIDTH * 4; // 4 bytes per pixel (RGBA)
 
-mod color {
-    //! Holds the necessary Color items to keep
-    //! the namespace clean.
-    pub type Color = [u8; 4];
+mod color;
 
-    const            BLACK: Color = [0, 0, 0, 0xff];
-    const        DARK_GRAY: Color = [0x9d, 0x9d, 0x9d, 0xff];
-    const             GRAY: Color = [0xc9, 0xc9, 0xc9, 0xff];
-    const            WHITE: Color = [0xfe, 0xfe, 0xfe, 0xff];
-    const      TRANSPARENT: Color = [0xff, 0xff, 0xff, 0];
-    const DARK_GRAY_COMPAT: Color = [0x30, 0x30, 0x30, 0xff];
-    const      GRAY_COMPAT: Color = [0x50, 0x50, 0x50, 0xff];
+pub use color::{ColorMap, ColorList};
 
-    /// The color Code that corresponds to BLACK
-    const COLORCODE_BLACK: u8 = 0x61;
-    /// The color Code that corresponds to BACKGROUND
-    const COLORCODE_BACKGROUND: u8 = 0x62;
-    /// The color Code that corresponds to DARK_GRAY
-    const COLORCODE_DARK_GRAY: u8 = 0x63;
-    /// The color Code that corresponds to GRAY
-    const COLORCODE_GRAY: u8 = 0x64;
-    /// The color Code that corresponds to WHITE
-    const COLORCODE_WHITE: u8 = 0x65;
-    /// The color Code that corresponds to MARKER_BLACK
-    const COLORCODE_MARKER_BLACK: u8 = 0x66;
-    /// The color Code that corresponds to MARKER_DARK_GRAY
-    const COLORCODE_MARKER_DARK_GRAY: u8 = 0x67;
-    /// The color Code that corresponds to MARKER_GRAY
-    const COLORCODE_MARKER_GRAY: u8 = 0x68;
-
-    pub struct ColorMap {
-        pub black: Color,
-        pub darkgray: Color,
-        pub gray: Color,
-        pub white: Color,
-        pub transparent: Color,
-        pub darkgray_compat: Color,
-        pub gray_compat: Color,
-    }
-
-    impl ColorMap {
-        /// Creates a new ColorMap Object with the given colors and compatibility colors.
-        /// 
-        /// The colors should be ordered:
-        /// 1. [Black](Self::black)
-        /// 2. [Dark Grey](Self::darkgray)
-        /// 3. [Gray](Self::gray)
-        /// 4. [White](Self::white)
-        /// 
-        /// The Compatibility Colors should be
-        /// 1. [Dark Grey Compatibility](Self::darkgray_compat)
-        /// 2. [Grey Compatibility](Self::gray_compat)
-        pub fn new(colors: &[Color; 4], compat_colors: &[Color; 2]) -> Self {
-            ColorMap {
-                black: colors[0],
-                darkgray: colors[1],
-                gray: colors[2],
-                white: colors[3],
-                transparent: TRANSPARENT,
-                darkgray_compat: compat_colors[0],
-                gray_compat: compat_colors[1],
-            }
-        }
-
-        /// Maps the Supernote ColorCode to its corresponding Color
-        /// 
-        /// Defaults to [Black](Self::black).
-        pub fn get(&self, colorcode: u8) -> Result<Color, super::DecoderError> {
-            match colorcode {
-                COLORCODE_BLACK => Ok(self.black),
-                COLORCODE_BACKGROUND => Ok(self.transparent),
-                COLORCODE_DARK_GRAY => Ok(self.darkgray),
-                COLORCODE_GRAY => Ok(self.gray),
-                COLORCODE_WHITE => Ok(self.white),
-                COLORCODE_MARKER_BLACK => Ok(self.black),
-                COLORCODE_MARKER_DARK_GRAY => Ok(self.darkgray),
-                COLORCODE_MARKER_GRAY => Ok(self.gray),
-                _ => Err(super::DecoderError::UnknownColorCode(colorcode)),
-            }
-        }
-
-        pub fn get_bytes(&self, colorcode: u8, length: usize) -> Result<Vec<u8>, super::DecoderError> {
-            Ok(self.get(colorcode)?.repeat(length))
-        }
-    }
-
-    impl Default for ColorMap {
-        fn default() -> Self {
-            ColorMap {
-                black: BLACK,
-                darkgray: DARK_GRAY,
-                gray: GRAY,
-                white: WHITE,
-                transparent: TRANSPARENT,
-                darkgray_compat: DARK_GRAY_COMPAT,
-                gray_compat: GRAY_COMPAT,
-            }
-        }
-    }
+#[derive(Debug)]
+pub struct DecodedImage {
+    idx: usize,
+    pub white: Vec<bool>,
+    pub l_gray: Vec<bool>,
+    pub d_gray: Vec<bool>,
+    pub black: Vec<bool>,
 }
-
-pub use color::ColorMap;
 
 #[derive(Debug)]
 pub enum DecoderError {
@@ -139,8 +51,6 @@ impl std::fmt::Display for DecoderError {
 impl std::error::Error for DecoderError {}
 
 pub fn decode_data(data: &[u8], colormap: &ColorMap) -> Result<Vec<u8>, DecoderError> {
-    const ALL_BLANK: bool = false;
-
     use std::collections::VecDeque;
 
     let mut data_iter = data.iter();
@@ -212,6 +122,76 @@ pub fn decode_data(data: &[u8], colormap: &ColorMap) -> Result<Vec<u8>, DecoderE
     Ok(uncompressed)
 }
 
+pub fn decode_separate(data: &[u8]) -> Result<DecodedImage, DecoderError> {
+    use std::collections::VecDeque;
+
+    let mut data_iter = data.iter();
+    let mut image = DecodedImage::default();
+
+    let mut holder: Option<(u8, u8)> = None;
+    let mut queue: VecDeque<(u8, usize)> = VecDeque::with_capacity(4);
+
+    while let Some(&colorcode) = data_iter.next() {
+        let length_byte = match data_iter.next() {
+            Some(&l) => l,
+            None => return Err(DecoderError::DataEndedUnexpectedly),
+        };
+        let mut data_pushed = false;
+
+        if let Some((prev_colorcode, prev_length)) = holder.take() {
+            if colorcode == prev_colorcode {
+                let length = 1 + (length_byte as usize)
+                    + (((prev_length & 0x7f) as usize + 1) << 7);
+                queue.push_back((colorcode, length));
+                data_pushed = true;
+            } else {
+                let prev_length = ((prev_length & 0x7f) as usize + 1) << 7;
+                queue.push_back((prev_colorcode, prev_length));
+            }
+        }
+
+        if !data_pushed {
+            if length_byte == SPECIAL_LENGTH_MARKER {
+                let length = if ALL_BLANK {
+                    SPECIAL_LENGTH_FOR_BLANK
+                } else {
+                    SPECIAL_LENGTH
+                };
+                queue.push_back((colorcode, length));
+            } else if length_byte & 0x80 != 0 {
+                holder = Some((colorcode, length_byte));
+                // Held data will be processed in the next loop iteration
+            } else {
+                let length = (length_byte as usize) + 1;
+                queue.push_back((colorcode, length));
+            }
+        }
+
+        while let Some((colorcode, length)) = queue.pop_front() {
+            image.push(colorcode, length)?;
+        }
+    }
+
+    // Handle any remaining holder
+    if let Some((colorcode, length_byte)) = holder {
+        let length = adjust_tail_length(length_byte, image.len(), image.capacity());
+        if length > 0 {
+            image.push(colorcode, length)?;
+        }
+    }
+
+    // Check if uncompressed length matches expected length
+    if !image.is_full() {
+        return Err(DecoderError::UncompressedLengthMismatch {
+            actual: image.len(),
+            expected: image.capacity(),
+        });
+    }
+
+    // Return the uncompressed data, size, and bits per pixel
+    Ok(image)
+}
+
 fn adjust_tail_length(tail_length: u8, current_length: usize, total_length: usize) -> usize {
     let gap = total_length - current_length;
     for i in (0..8).rev() {
@@ -221,4 +201,115 @@ fn adjust_tail_length(tail_length: u8, current_length: usize, total_length: usiz
         }
     }
     0
+}
+
+impl DecodedImage {
+    pub fn push(&mut self, colorcode: u8, length: usize) -> Result<(), DecoderError>{
+        use color::ColorList::*;
+        match color::ColorList::decode(colorcode)? {
+            White => Self::process(&mut self.white, &mut self.idx, length),
+            LightGray => Self::process(&mut self.l_gray, &mut self.idx, length),
+            DarkGray => Self::process(&mut self.d_gray, &mut self.idx, length),
+            Black => Self::process(&mut self.black, &mut self.idx, length),
+            Transparent => {self.idx = self.capacity().min(self.idx + length);},
+        };
+        Ok(())
+    }
+
+    pub fn into_color(self, colormap: &ColorMap) -> Vec<u8> {
+        let mut bitmap = Vec::with_capacity(std::mem::size_of::<color::ColorType>() * self.capacity());
+
+        for idx in 0..self.capacity() {
+            bitmap.extend_from_slice(&colormap.map(self.get_color_at(idx)));
+        }
+        
+        bitmap
+    }
+
+    fn get_color_at(&self, idx: usize) -> ColorList {
+        use ColorList::*;
+
+        if let Some(true) = self.black.get(idx) {
+            return Black;
+        }
+        if let Some(true) = self.d_gray.get(idx) {
+            return DarkGray;
+        }
+        if let Some(true) = self.l_gray.get(idx) {
+            return LightGray;
+        }
+        if let Some(true) = self.white.get(idx) {
+            return White;
+        }
+        Transparent
+    }
+
+    fn process(arr: &mut [bool], start: &mut usize, length: usize) {
+        arr.iter_mut().skip(*start).take(length)
+            .for_each(|pixel| *pixel = true);
+        *start = arr.len().min(*start + length);
+    }
+
+    pub fn len(&self) -> usize {
+        self.idx
+    }
+
+    pub fn is_full(&self) -> bool {
+        self.idx == self.capacity()
+    }
+
+    pub const fn capacity(&self) -> usize {
+        PAGE_HEIGHT * PAGE_WIDTH
+    }
+}
+
+impl Default for DecodedImage {
+    fn default() -> Self {
+        Self {
+            idx: 0,
+            white: vec![false; PAGE_HEIGHT * PAGE_WIDTH],
+            l_gray: vec![false; PAGE_HEIGHT * PAGE_WIDTH],
+            d_gray: vec![false; PAGE_HEIGHT * PAGE_WIDTH],
+            black: vec![false; PAGE_HEIGHT * PAGE_WIDTH],
+        }
+    }
+}
+
+impl std::ops::Add for DecodedImage {
+    type Output = Self;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        let mut res = Self {
+            idx: self.idx.max(rhs.idx),
+            white: self.white,
+            l_gray: self.l_gray,
+            d_gray: self.d_gray,
+            black: self.black,
+        };
+        for idx in 0..res.idx {
+            res.white[idx] |= rhs.white[idx];
+            res.l_gray[idx] |= rhs.l_gray[idx];
+            res.d_gray[idx] |= rhs.d_gray[idx];
+            res.black[idx] |= rhs.black[idx];
+        }
+        res
+    }
+}
+
+impl std::ops::AddAssign for DecodedImage {
+    fn add_assign(&mut self, rhs: Self) {
+        self.idx = self.idx.max(rhs.idx);
+        for idx in 0..self.idx {
+            self.white[idx] |= rhs.white[idx];
+            self.l_gray[idx] |= rhs.l_gray[idx];
+            self.d_gray[idx] |= rhs.d_gray[idx];
+            self.black[idx] |= rhs.black[idx];
+        }
+    }
+}
+
+impl std::iter::Sum for DecodedImage {
+    fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
+        iter.fold(DecodedImage::default(), |acc, i| acc + i)
+    }
 }

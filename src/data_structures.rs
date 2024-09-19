@@ -101,12 +101,6 @@ impl Notebook {
     }
 }
 
-impl Keyword {
-    pub fn get_vec_from_meta(metadata: &Metadata, file: &mut File) -> Vec<Keyword> {
-        vec![]
-    }
-}
-
 impl Title {
     /// It loops over the titles in [Metadata::footer::titles](metadata::Footer::titles) and maps it to a [Title] by calling [Title::from_meta].
     /// 
