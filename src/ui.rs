@@ -22,6 +22,18 @@ impl MyApp {
             page_to_load: 0,
         }
     }
+
+    fn generate_cache(&mut self, ctx: &egui::Context) {
+        let img_handle = match crate::exporter::get_bitmap(&self.notebooks.pages[self.page_to_load], &crate::decoder::ColorMap::default()) {
+            Ok(data) => {
+                use crate::data_structures::file_format_consts::*;
+                let image = egui::ColorImage::from_rgba_unmultiplied([PAGE_WIDTH, PAGE_HEIGHT], &data);
+                TempImageHolder::Image(ctx.load_texture(format!("page#{}", self.page_to_load+1), image, egui::TextureOptions::default()))
+            },
+            Err(err) => TempImageHolder::Error(err),
+        };
+        self.cache_image = Some(img_handle);
+    }
 }
 
 impl eframe::App for MyApp {
@@ -31,16 +43,7 @@ impl eframe::App for MyApp {
 
             ui.horizontal(|ui| {
                 if ui.add(egui::Slider::new(&mut self.page_to_load, 0..=(self.notebooks.pages.len()-1))).changed() {
-                    self.cache_image = None;
-                    let img_handles = match crate::exporter::get_bitmap(&self.notebooks.pages[self.page_to_load], &crate::decoder::ColorMap::default()) {
-                        Ok(data) => {
-                            use crate::data_structures::file_format_consts::*;
-                            let image = egui::ColorImage::from_rgba_unmultiplied([PAGE_WIDTH, PAGE_HEIGHT], &data);
-                            TempImageHolder::Image(ctx.load_texture(format!("page#{}", self.page_to_load+1), image, egui::TextureOptions::default()))
-                        },
-                        Err(err) => TempImageHolder::Error(err),
-                    };
-                    self.cache_image = Some(img_handles);
+                    self.generate_cache(ctx);
                 }
 
                 if ui.button("Export SVG").clicked() {
@@ -60,16 +63,14 @@ impl eframe::App for MyApp {
                 }
             });
 
-            if let Some(result) = &self.cache_image {
-                match result {
+            match &self.cache_image {
+                Some(result) => match result {
                     TempImageHolder::Image(image) => {
-                        ui.horizontal(|ui| {
-                            ui.label("Adding Image");
-                            ui.image(image);
-                        });
+                        ui.image(image);
                     },
                     TempImageHolder::Error(err) => {ui.label(format!("Page {} had error: {:?}", self.page_to_load, err));},
-                }
+                },
+                None => self.generate_cache(ctx),
             }
         });
     }

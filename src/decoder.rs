@@ -8,7 +8,6 @@ const ALL_BLANK: bool = false;
 const SPECIAL_LENGTH_MARKER: u8 = 0xff;
 const SPECIAL_LENGTH: usize = 0x4000;
 const SPECIAL_LENGTH_FOR_BLANK: usize = 0x400;
-const EXPECTED_LEN: usize = PAGE_HEIGHT * PAGE_WIDTH * 4; // 4 bytes per pixel (RGBA)
 
 mod color;
 
@@ -49,78 +48,6 @@ impl std::fmt::Display for DecoderError {
 }
 
 impl std::error::Error for DecoderError {}
-
-pub fn decode_data(data: &[u8], colormap: &ColorMap) -> Result<Vec<u8>, DecoderError> {
-    use std::collections::VecDeque;
-
-    let mut data_iter = data.iter();
-    let mut uncompressed = Vec::<u8>::with_capacity(EXPECTED_LEN);
-
-    let mut holder: Option<(u8, u8)> = None;
-    let mut queue: VecDeque<(u8, usize)> = VecDeque::with_capacity(4);
-
-    while let Some(&colorcode) = data_iter.next() {
-        let length_byte = match data_iter.next() {
-            Some(&l) => l,
-            None => return Err(DecoderError::DataEndedUnexpectedly),
-        };
-        let mut data_pushed = false;
-
-        if let Some((prev_colorcode, prev_length)) = holder.take() {
-            if colorcode == prev_colorcode {
-                let length = 1 + (length_byte as usize)
-                    + (((prev_length & 0x7f) as usize + 1) << 7);
-                queue.push_back((colorcode, length));
-                data_pushed = true;
-            } else {
-                let prev_length = ((prev_length & 0x7f) as usize + 1) << 7;
-                queue.push_back((prev_colorcode, prev_length));
-            }
-        }
-
-        if !data_pushed {
-            if length_byte == SPECIAL_LENGTH_MARKER {
-                let length = if ALL_BLANK {
-                    SPECIAL_LENGTH_FOR_BLANK
-                } else {
-                    SPECIAL_LENGTH
-                };
-                queue.push_back((colorcode, length));
-            } else if length_byte & 0x80 != 0 {
-                holder = Some((colorcode, length_byte));
-                // Held data will be processed in the next loop iteration
-            } else {
-                let length = (length_byte as usize) + 1;
-                queue.push_back((colorcode, length));
-            }
-        }
-
-        while let Some((colorcode, length)) = queue.pop_front() {
-            let color_bytes = colormap.get_bytes(colorcode, length)?;
-            uncompressed.extend(color_bytes);
-        }
-    }
-
-    // Handle any remaining holder
-    if let Some((colorcode, length_byte)) = holder {
-        let length = adjust_tail_length(length_byte, uncompressed.len(), EXPECTED_LEN);
-        if length > 0 {
-            let color_bytes = colormap.get_bytes(colorcode, length)?;
-            uncompressed.extend(color_bytes);
-        }
-    }
-
-    // Check if uncompressed length matches expected length
-    if uncompressed.len() != EXPECTED_LEN {
-        return Err(DecoderError::UncompressedLengthMismatch {
-            actual: uncompressed.len(),
-            expected: EXPECTED_LEN,
-        });
-    }
-
-    // Return the uncompressed data, size, and bits per pixel
-    Ok(uncompressed)
-}
 
 pub fn decode_separate(data: &[u8]) -> Result<DecodedImage, DecoderError> {
     use std::collections::VecDeque;
