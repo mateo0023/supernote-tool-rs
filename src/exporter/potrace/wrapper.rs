@@ -202,82 +202,87 @@ pub fn trace(bitmap: &Bitmap, params: &PotraceParams) -> Result<PotraceState, St
 pub fn generate_combined_svg(
     paths: Vec<(PotraceState, String)>,
 ) -> Result<String, String> {
+    generate_combined_svg_w_h(paths, PAGE_WIDTH, PAGE_HEIGHT)
+}
+
+fn generate_combined_svg_w_h(
+    paths: Vec<(PotraceState, String)>,
+    width: i32,
+    height: i32,
+) -> Result<String, String> {
     use std::fmt::Write;
 
     let mut svg_data = String::new();
 
-    // Write SVG header
+    // Write SVG header with viewBox
     write!(
         svg_data,
         r#"<?xml version="1.0" standalone="no"?>
-<svg width="{0}" height="{1}" version="1.1" xmlns="http://www.w3.org/2000/svg">
+<svg width="{0}" height="{1}" viewBox="0 0 {0} {1}" version="1.1" xmlns="http://www.w3.org/2000/svg">
 "#,
-        PAGE_WIDTH, PAGE_HEIGHT
-    ).map_err(|e| e.to_string())?;
+        width, height
+    )
+    .map_err(|e| e.to_string())?;
 
-    for (state, fill_color) in paths {
-        unsafe {
+for (state, fill_color) in paths {
+    unsafe {
             let mut path = (*state.state).plist;
 
             while !path.is_null() {
                 let curve = &(*path).curve;
+
+                if (*path).sign == 45 {
+                    // Child, will be addressed in the masking
+                    path = (*path).next;
+                    continue;
+                }
+
+                // See if we need to mask items
+                let mut child = (*path).childlist;
+                let mask = if !child.is_null() {
+                    // No need to create mask if not negative
+                    if (*child).sign != 45 {
+                        None
+                    } else {
+                        let mask_id = format!("#{:?}", path);
+                        write!(
+                            svg_data,
+                            r#"<defs><mask id="{:?}"><rect x="0" y="0" width="{}" height="{}" fill="white"/>"#,
+                            path,
+                            width,
+                            height,
+                        ).map_err(|e| e.to_string())?;
+                        while !child.is_null() {
+                            let curve = &(*child).curve;
+    
+                            write!(
+                                svg_data,
+                                "{}",
+                                process_curve(curve, "#000000", None)?,
+                            ).map_err(|e| e.to_string())?;
+    
+                            child = (*child).next;
+                        }
+                        write!(
+                            svg_data,
+                            "</mask></defs>"
+                        ).map_err(|e| e.to_string())?;
+
+                        Some(mask_id)
+                    }
+                } else {
+                    None
+                };
 
                 if curve.n == 0 {
                     path = (*path).next;
                     continue;
                 }
 
-                // Start the path element
-                write!(svg_data, r#"<path d=""#).map_err(|e| e.to_string())?;
-
-                let n = curve.n as usize;
-
-                for i in 0..n {
-                    let tag = *curve.tag.add(i) as u32;
-
-                    // Get the control points for this segment
-                    let c_array = *curve.c.add(i); // c_array is [potrace_dpoint_t; 3]
-
-                    match tag {
-                        POTRACE_CORNER => {
-                            if i == 0 {
-                                // Move to the first point
-                                let c0 = c_array[2];
-                                write!(svg_data, " M {} {}", c0.x, c0.y).map_err(|e| e.to_string())?;
-                            }
-                            let c1 = c_array[1];
-                            let c2 = c_array[2];
-
-                            write!(svg_data, " L {} {}", c1.x, c1.y).map_err(|e| e.to_string())?;
-                            write!(svg_data, " L {} {}", c2.x, c2.y).map_err(|e| e.to_string())?;
-                        }
-                        POTRACE_CURVETO => {
-                            if i == 0 {
-                                // Move to the first point
-                                let c0 = c_array[2];
-                                write!(svg_data, " M {} {}", c0.x, c0.y).map_err(|e| e.to_string())?;
-                            }
-                            let c1 = c_array[0];
-                            let c2 = c_array[1];
-                            let c3 = c_array[2];
-
-                            write!(
-                                svg_data,
-                                " C {} {}, {} {}, {} {}",
-                                c1.x, c1.y, c2.x, c2.y, c3.x, c3.y
-                            ).map_err(|e| e.to_string())?;
-                        }
-                        _ => {}
-                    }
-                }
-
-                write!(svg_data, " z ").map_err(|e| e.to_string())?; // Close the path
-
-                // Finish the path element with the fill color
                 write!(
                     svg_data,
-                    r#"" fill="{}" stroke="none"/>"#,
-                    fill_color
+                    "{}",
+                    process_curve(curve, &fill_color, mask)?,
                 ).map_err(|e| e.to_string())?;
 
                 path = (*path).next;
@@ -287,6 +292,76 @@ pub fn generate_combined_svg(
 
     // Write SVG footer
     write!(svg_data, "\n</svg>\n").map_err(|e| e.to_string())?;
+
+    Ok(svg_data)
+}
+
+unsafe fn process_curve(curve: &potrace_curve_s, fill_color: &str, masks: Option<String>) -> Result<String, String> {
+    use std::fmt::Write;
+
+    let mut svg_data = String::new();
+
+    // Get the number of segments
+    let n = curve.n as usize;
+
+    // Create slices for tags and control points
+    let tags = std::slice::from_raw_parts(curve.tag, n);
+    let c = std::slice::from_raw_parts(curve.c, n);
+
+    // Start the path element
+    write!(svg_data, r#"<path d=""#).map_err(|e| e.to_string())?;
+
+    // The starting position is the same as the ending one.
+    let c0 = c[n-1][2];
+    // Move to the starting position
+    write!(svg_data, " M {} {}", c0.x, c0.y).map_err(|e| e.to_string())?;
+
+    for i in 0..n {
+        let tag = tags[i].unsigned_abs();
+
+        // Get the control points for this segment
+        let c_array = c[i]; // c_array is [potrace_dpoint_t; 3]
+
+        match tag {
+            POTRACE_CORNER => {
+                let c1 = c_array[1];
+                let c2 = c_array[2];
+
+                write!(svg_data, " L {} {}", c1.x, c1.y).map_err(|e| e.to_string())?;
+                write!(svg_data, " L {} {}", c2.x, c2.y).map_err(|e| e.to_string())?;
+            }
+            POTRACE_CURVETO => {
+                let c1 = c_array[0];
+                let c2 = c_array[1];
+                let c3 = c_array[2];
+
+                write!(
+                    svg_data,
+                    " C {} {}, {} {}, {} {}",
+                    c1.x, c1.y, c2.x, c2.y, c3.x, c3.y
+                )
+                .map_err(|e| e.to_string())?;
+            }
+            _ => {}
+        }
+    }
+
+    write!(svg_data, " z ").map_err(|e| e.to_string())?; // Close the path
+
+    // Finish the path element with fill color and fill-rule
+    match masks {
+        Some(mask_id) => write!(
+                svg_data,
+                r#"" fill="{}" stroke="none" fill-rule="nonzero" mask="url({})"/>"#,
+                fill_color,
+                mask_id
+            ).map_err(|e| e.to_string())?,
+        None => write!(
+            svg_data,
+            r#"" fill="{}" stroke="none" fill-rule="nonzero"/>"#,
+            fill_color
+        ).map_err(|e| e.to_string())?,
+    }
 
     Ok(svg_data)
 }

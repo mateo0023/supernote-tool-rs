@@ -101,7 +101,7 @@ impl ColorMap {
 }
 
 pub fn format_color(color: ColorType) -> String {
-    format!("{:02X}{:02X}{:02X}", color[0], color[1], color[2])
+    format!("#{:02X}{:02X}{:02X}", color[0], color[1], color[2])
 }
 
 impl Default for ColorMap {
