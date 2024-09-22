@@ -356,7 +356,8 @@ impl Notebook {
         // todo!("Still need to work on the keywords");
         let titles = Title::get_vec_from_meta(&metadata, file)?;
         let links = Link::get_vec_from_meta(&metadata, file);
-        let pages = Page::get_vec_from_meta(&metadata.pages, file);
+        let mut pages = Page::get_vec_from_meta(&metadata.pages, file);
+        pages.sort_by_key(|p| p.page_num);
 
         Ok(Notebook {
             metadata,

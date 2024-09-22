@@ -57,6 +57,7 @@ pub struct Page {
     pub recogn_file: Option<Vec<u8>>,
     pub recogn_text: Option<Vec<u8>>,
     pub layers: Vec<Layer>,
+    pub page_num: usize,
 }
 
 #[derive(Debug)]
@@ -197,6 +198,7 @@ impl Page {
             recogn_file: extract_key_and_read(file, &metadata.page_info, "RECOGNFILE"),
             recogn_text: extract_key_and_read(file, &metadata.page_info, "RECOGNTEXT"),
             layers: Layer::get_vec_fom_vec(&metadata.layers, file),
+            page_num: metadata.page_info.get("PAGE_NUMBER").unwrap()[0].parse().unwrap(),
         }
     }
 }

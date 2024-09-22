@@ -1,5 +1,7 @@
 //! Holds the necessary Color items to keep
 //! the namespace clean.
+
+use crate::common::PdfColor;
 pub type ColorType = [u8; 4];
 
 #[derive(Debug, Clone, Copy)]
@@ -87,6 +89,21 @@ impl ColorMap {
             ColorList::Black => self.black,
             ColorList::Transparent => self.transparent,
         }
+    }
+
+    pub fn get_f_rgb(&self, color: ColorList) -> PdfColor {
+        let c = match color {
+            ColorList::White => self.white,
+            ColorList::LightGray => self.gray,
+            ColorList::DarkGray => self.darkgray,
+            ColorList::Black => self.black,
+            ColorList::Transparent => self.transparent,
+        };
+        [
+            c[0] as f64 / 255.,
+            c[1] as f64 / 255.,
+            c[2] as f64 / 255.,
+        ]
     }
 
     pub fn get_color_hex(&self, color: ColorList) -> String {

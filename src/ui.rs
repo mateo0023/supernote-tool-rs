@@ -50,13 +50,7 @@ impl eframe::App for MyApp {
                     let image = crate::exporter::page_to_svg(&self.notebooks.pages[self.page_to_load], &crate::decoder::ColorMap::default());
                     match image {
                         Ok(svg) => {
-                            use std::fs::File;
-                            use std::io::Write;
-                            if let Ok(mut f) = File::create(format!("./test/out_{}.svg", self.page_to_load)) {
-                                if let Err(err) = f.write_all(svg.as_bytes()) {
-                                    todo!("{err}")
-                                }
-                            }
+                            todo!("We have operations {:?}", svg);
                         },
                         Err(err) => todo!("{err}"),
                     }

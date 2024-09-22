@@ -1,6 +1,8 @@
 // src/potrace/wrapper.rs
 
-use super::bindings::*;
+use lopdf::content::Operation;
+
+use super::{bindings::*, PdfColor};
 use std::mem;
 use std::os::raw::c_ulong;
 
@@ -200,106 +202,74 @@ pub fn trace(bitmap: &Bitmap, params: &PotraceParams) -> Result<PotraceState, St
 }
 
 pub fn generate_combined_svg(
-    paths: Vec<(PotraceState, String)>,
-) -> Result<String, String> {
-    generate_combined_svg_w_h(paths, PAGE_WIDTH, PAGE_HEIGHT)
-}
+    paths: Vec<(PotraceState, PdfColor)>,
+) -> Vec<Operation> {
+    use lopdf::content::*;
 
-fn generate_combined_svg_w_h(
-    paths: Vec<(PotraceState, String)>,
-    width: i32,
-    height: i32,
-) -> Result<String, String> {
-    use std::fmt::Write;
+    let mut operations: Vec<Operation> = Vec::new();
 
-    let mut svg_data = String::new();
-
-    // Write SVG header with viewBox
-    write!(
-        svg_data,
-        r#"<?xml version="1.0" standalone="no"?>
-<svg width="{0}" height="{1}" viewBox="0 0 {0} {1}" version="1.1" xmlns="http://www.w3.org/2000/svg">
-"#,
-        width, height
-    )
-    .map_err(|e| e.to_string())?;
-
-for (state, fill_color) in paths {
-    unsafe {
+    for (state, fill_color) in paths {
+        unsafe {
             let mut path = (*state.state).plist;
-
-            while !path.is_null() {
-                let curve = &(*path).curve;
-
-                if (*path).sign == 45 {
-                    // Child, will be addressed in the masking
+            
+            if !path.is_null() {
+                // Set the color to be used to the path
+                operations.push(Operation::new(
+                    "rg",
+                    fill_color.into_iter().map(|c| c.into()).collect()
+                ));
+                
+                // Loop over all the subpaths with the given color
+                while !path.is_null() {
+                    let curve = (*path).curve;
+    
+                    // Should already contain + and - loops in their corresponding
+                    // order. This could be a possible issue if assumed wrong.
+                    operations.extend(process_curve(&curve));
+    
                     path = (*path).next;
-                    continue;
                 }
 
-                // See if we need to mask items
-                let mut child = (*path).childlist;
-                let mask = if !child.is_null() {
-                    // No need to create mask if not negative
-                    if (*child).sign != 45 {
-                        None
-                    } else {
-                        let mask_id = format!("#{:?}", path);
-                        write!(
-                            svg_data,
-                            r#"<defs><mask id="{:?}"><rect x="0" y="0" width="{}" height="{}" fill="white"/>"#,
-                            path,
-                            width,
-                            height,
-                        ).map_err(|e| e.to_string())?;
-                        while !child.is_null() {
-                            let curve = &(*child).curve;
-    
-                            write!(
-                                svg_data,
-                                "{}",
-                                process_curve(curve, "#000000", None)?,
-                            ).map_err(|e| e.to_string())?;
-    
-                            child = (*child).next;
-                        }
-                        write!(
-                            svg_data,
-                            "</mask></defs>"
-                        ).map_err(|e| e.to_string())?;
-
-                        Some(mask_id)
-                    }
-                } else {
-                    None
-                };
-
-                if curve.n == 0 {
-                    path = (*path).next;
-                    continue;
-                }
-
-                write!(
-                    svg_data,
-                    "{}",
-                    process_curve(curve, &fill_color, mask)?,
-                ).map_err(|e| e.to_string())?;
-
-                path = (*path).next;
+                // Fill the paths with the pre-set color
+                // uses the nonzero winding number rule.
+                operations.push(Operation::new("f", vec![]));
             }
         }
     }
 
-    // Write SVG footer
-    write!(svg_data, "\n</svg>\n").map_err(|e| e.to_string())?;
-
-    Ok(svg_data)
+    operations
 }
 
-unsafe fn process_curve(curve: &potrace_curve_s, fill_color: &str, masks: Option<String>) -> Result<String, String> {
-    use std::fmt::Write;
+/// # NOT COMPLETE
+/// 
+/// Tree structure looping over the path.
+unsafe fn loop_over_curves(mut path: *mut potrace_path_s) -> Vec<Operation> {
+    let mut operations = vec![];
+    if !path.is_null() {
+        while !path.is_null() {
+            let curve = (*path).curve;
 
-    let mut svg_data = String::new();
+            operations.extend(process_curve(&curve));
+            
+            let mut child = (*path).childlist;
+            while !child.is_null() {
+                operations.extend(loop_over_curves(child));
+                child = (*child).sibling
+            }
+
+            path = (*path).sibling;
+        }
+    }
+    operations
+}
+
+/// Generates the [Operation]s for the given curve
+unsafe fn process_curve(curve: &potrace_curve_s) -> Vec<Operation> {
+    if curve.n == 0 {
+        return vec![];
+    }
+
+    let mut operations = Vec::new();
 
     // Get the number of segments
     let n = curve.n as usize;
@@ -308,13 +278,10 @@ unsafe fn process_curve(curve: &potrace_curve_s, fill_color: &str, masks: Option
     let tags = std::slice::from_raw_parts(curve.tag, n);
     let c = std::slice::from_raw_parts(curve.c, n);
 
-    // Start the path element
-    write!(svg_data, r#"<path d=""#).map_err(|e| e.to_string())?;
-
     // The starting position is the same as the ending one.
     let c0 = c[n-1][2];
     // Move to the starting position
-    write!(svg_data, " M {} {}", c0.x, c0.y).map_err(|e| e.to_string())?;
+    operations.push(Operation::new("m", vec![c0.x.into(), c0.y.into()]));
 
     for i in 0..n {
         let tag = tags[i].unsigned_abs();
@@ -327,41 +294,25 @@ unsafe fn process_curve(curve: &potrace_curve_s, fill_color: &str, masks: Option
                 let c1 = c_array[1];
                 let c2 = c_array[2];
 
-                write!(svg_data, " L {} {}", c1.x, c1.y).map_err(|e| e.to_string())?;
-                write!(svg_data, " L {} {}", c2.x, c2.y).map_err(|e| e.to_string())?;
+                operations.push(Operation::new("l", vec![c1.x.into(), c1.y.into()]));
+                operations.push(Operation::new("l", vec![c2.x.into(), c2.y.into()]));
             }
             POTRACE_CURVETO => {
                 let c1 = c_array[0];
                 let c2 = c_array[1];
                 let c3 = c_array[2];
 
-                write!(
-                    svg_data,
-                    " C {} {}, {} {}, {} {}",
+                // Push the Bezier Curve
+                operations.push(Operation::new("c", [
                     c1.x, c1.y, c2.x, c2.y, c3.x, c3.y
-                )
-                .map_err(|e| e.to_string())?;
+                ].into_iter().map(|it| it.into()).collect()));
             }
             _ => {}
         }
     }
 
-    write!(svg_data, " z ").map_err(|e| e.to_string())?; // Close the path
+    // Close the curve ("subpath" in PDF terms)
+    operations.push(Operation::new("h", vec![]));
 
-    // Finish the path element with fill color and fill-rule
-    match masks {
-        Some(mask_id) => write!(
-                svg_data,
-                r#"" fill="{}" stroke="none" fill-rule="nonzero" mask="url({})"/>"#,
-                fill_color,
-                mask_id
-            ).map_err(|e| e.to_string())?,
-        None => write!(
-            svg_data,
-            r#"" fill="{}" stroke="none" fill-rule="nonzero"/>"#,
-            fill_color
-        ).map_err(|e| e.to_string())?,
-    }
-
-    Ok(svg_data)
+    operations
 }

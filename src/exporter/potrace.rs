@@ -3,6 +3,9 @@ mod wrapper;
 
 use crate::decoder::{DecodedImage, ColorList, ColorMap};
 
+use crate::common::*;
+
+use lopdf::content::Operation;
 use wrapper::{Bitmap, PotraceParams, PotraceState, trace, generate_combined_svg};
 
 struct MultiColorBitmap {
@@ -10,33 +13,33 @@ struct MultiColorBitmap {
     l_gray_btmp: Bitmap,
     d_gray_btmp: Bitmap,
     black_btmp: Bitmap,
-    white_color: String,
-    l_gray_color: String,
-    d_gray_color: String,
-    black_color: String,
+    white_color: PdfColor,
+    l_gray_color: PdfColor,
+    d_gray_color: PdfColor,
+    black_color: PdfColor,
 }
 
-pub fn trace_and_generate(image: DecodedImage, color_map: &ColorMap) -> Result<String, String> {
+pub fn trace_and_generate(image: DecodedImage, color_map: &ColorMap) -> Result<Vec<Operation>, String> {
     let params = PotraceParams::new()?;
 
     let mut bitmamps: MultiColorBitmap = image.try_into()?;
     bitmamps.add_color_map(color_map);
     let paths = bitmamps.trace(&params)?;
 
-    generate_combined_svg(paths)
+    Ok(generate_combined_svg(paths))
 }
 
 impl MultiColorBitmap {
     pub fn add_color_map(&mut self, color_map: &ColorMap) {
         use ColorList::*;
 
-        self.white_color = color_map.get_color_hex(White);
-        self.l_gray_color = color_map.get_color_hex(LightGray);
-        self.d_gray_color = color_map.get_color_hex(DarkGray);
-        self.black_color = color_map.get_color_hex(Black);
+        self.white_color = color_map.get_f_rgb(White);
+        self.l_gray_color = color_map.get_f_rgb(LightGray);
+        self.d_gray_color = color_map.get_f_rgb(DarkGray);
+        self.black_color = color_map.get_f_rgb(Black);
     }
 
-    pub fn trace(self, params: &PotraceParams) -> Result<Vec<(PotraceState, String)>, String> {
+    pub fn trace(self, params: &PotraceParams) -> Result<Vec<(PotraceState, PdfColor)>, String> {
         Ok(vec![
             (trace(&self.white_btmp, params)?, self.white_color),
             (trace(&self.l_gray_btmp, params)?, self.l_gray_color),
@@ -60,10 +63,10 @@ impl TryFrom<DecodedImage> for MultiColorBitmap {
             l_gray_btmp: Bitmap::from_vec(&value.l_gray)?,
             d_gray_btmp: Bitmap::from_vec(&value.d_gray)?,
             black_btmp: Bitmap::from_vec(&value.black)?,
-            white_color: map.get_color_hex(White),
-            l_gray_color: map.get_color_hex(LightGray),
-            d_gray_color: map.get_color_hex(DarkGray),
-            black_color: map.get_color_hex(Black),
+            white_color: map.get_f_rgb(White),
+            l_gray_color: map.get_f_rgb(LightGray),
+            d_gray_color: map.get_f_rgb(DarkGray),
+            black_color: map.get_f_rgb(Black),
         })
     }
 }

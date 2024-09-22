@@ -2,7 +2,53 @@ use crate::data_structures::*;
 use crate::decoder::{decode_separate, ColorMap, DecodedImage};
 use crate::error::DecoderError;
 
+const A4_WIDTH: f32 = 210.;
+const A4_HEIGHT: f32 = 297.;
+
 mod potrace;
+
+use lopdf::content::Content;
+use lopdf::{dictionary, Document, Stream};
+
+pub fn to_pdf(notebook: &Notebook, colormap: &ColorMap) -> Result<Document, String> {
+    let mut pdf = Document::with_version("1.7");
+    let base_page_id = pdf.new_object_id();
+
+    let (page_commands, errors) = notebook.pages.iter().map(|page| 
+        page_to_svg(page, colormap)
+    ).fold((vec![], vec![]), |(mut pages, mut errors), page_res| {
+        match page_res {
+            Ok(c) => pages.push(c),
+            Err(e) => errors.push(e),
+        }
+        (pages, errors)
+    });
+
+    if !errors.is_empty() {
+        return Err(errors.join("\n"))
+    }
+
+    let mut pages = Vec::with_capacity(page_commands.len());
+    for content in page_commands {
+        let encode = match content.encode() {
+            Ok(e) => e,
+            Err(err) => return Err(err.to_string()),
+        };
+
+        let content_id = pdf.add_object(Stream::new(dictionary! {}, encode));
+
+        let page_id = pdf.add_object(dictionary!{
+            "Type" => "Page",
+            "Parent" => base_page_id,
+            "Contents" => content_id,
+        });
+        pages.push(page_id);
+    }
+
+    pdf.compress();
+
+    Ok(pdf)
+}
 
 pub fn get_bitmap(page: &Page, colormap: &ColorMap) -> Result<Vec<u8>, Vec<DecoderError>> {
     let (image, errors) = page.layers.iter()
@@ -26,7 +72,7 @@ pub fn get_bitmap(page: &Page, colormap: &ColorMap) -> Result<Vec<u8>, Vec<Decod
 }
 
 /// Exports a given page to a SVG String
-pub fn page_to_svg(page: &Page, colormap: &ColorMap) -> Result<String, String> {
+pub fn page_to_svg(page: &Page, colormap: &ColorMap) -> Result<Content, String> {
     let (image, errors) = page.layers.iter()
         .filter(|l| !l.is_background())
         .filter_map(|l| l.content.as_ref())
@@ -47,5 +93,9 @@ pub fn page_to_svg(page: &Page, colormap: &ColorMap) -> Result<String, String> {
         ));
     }
 
-    potrace::trace_and_generate(image, colormap)
+    potrace::trace_and_generate(image, colormap).map(|operations| {
+        Content {
+            operations,
+        }
+    })
 }
