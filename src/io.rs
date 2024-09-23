@@ -39,12 +39,7 @@ pub mod f_fmt {
 
     impl std::fmt::Display for Keyword {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            match self {
-                Keyword::Keyword => write!(f, "KEYWORD_"),
-                Keyword::Title => write!(f, "TITLE_"),
-                Keyword::Link =>  write!(f, "LINK0_"),
-                Keyword::Page =>  write!(f, "PAGE"),
-            }
+            write!(f, "{}", self.as_str())
         }
     }
 
@@ -53,7 +48,7 @@ pub mod f_fmt {
             match self {
                 Keyword::Keyword => "KEYWORD_",
                 Keyword::Title => "TITLE_",
-                Keyword::Link =>  "LINK0_",
+                Keyword::Link =>  "LINKO_",
                 Keyword::Page =>  "PAGE",
             }
         }

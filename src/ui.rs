@@ -45,16 +45,6 @@ impl eframe::App for MyApp {
                 if ui.add(egui::Slider::new(&mut self.page_to_load, 0..=(self.notebooks.pages.len()-1))).changed() {
                     self.generate_cache(ctx);
                 }
-
-                if ui.button("Export SVG").clicked() {
-                    let image = crate::exporter::page_to_svg(&self.notebooks.pages[self.page_to_load], &crate::decoder::ColorMap::default());
-                    match image {
-                        Ok(svg) => {
-                            todo!("We have operations {:?}", svg);
-                        },
-                        Err(err) => todo!("{err}"),
-                    }
-                }
             });
 
             match &self.cache_image {

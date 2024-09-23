@@ -14,37 +14,9 @@ pub fn to_pdf(notebook: &Notebook, colormap: &ColorMap) -> Result<Document, Stri
     let mut doc = Document::with_version("1.7");
     let base_page_id = doc.new_object_id();
 
-    let (page_commands, errors) = notebook.pages.iter().map(|page| 
-        page_to_svg(page, colormap)
-    ).fold((vec![], vec![]), |(mut pages, mut errors), page_res| {
-        match page_res {
-            Ok(c) => pages.push(c),
-            Err(e) => errors.push(e),
-        }
-        (pages, errors)
-    });
+    let pages = add_pages(base_page_id, &mut doc, notebook, colormap)?;
 
-    if !errors.is_empty() {
-        return Err(errors.join("\n"))
-    }
-
-    let mut pages: Vec<ObjectId> = Vec::with_capacity(page_commands.len());
-    for content in page_commands {
-        let encoded = match content.encode() {
-            Ok(e) => e,
-            Err(err) => return Err(err.to_string()),
-        };
-
-        let content_id = doc.add_object(Stream::new(dictionary! {}, encoded));
-
-        let page_id = doc.add_object(dictionary!{
-            "Type" => "Page",
-            "Parent" => base_page_id,
-            "MediaBox" => vec![0.into(), 0.into(), A4_WIDTH.into(), A4_HEIGHT.into()],
-            "Contents" => content_id,
-        });
-        pages.push(page_id);
-    }
+    let links = &notebook.links;
 
     let page_count = pages.len();
 
@@ -78,6 +50,88 @@ pub fn to_pdf(notebook: &Notebook, colormap: &ColorMap) -> Result<Document, Stri
     Ok(doc)
 }
 
+fn add_pages(pages_id: ObjectId, doc: &mut Document, notebook: &Notebook, colormap: &ColorMap) -> Result<Vec<ObjectId>, String> {
+    let (page_commands, errors) = notebook.pages.iter().map(|page| 
+        page_to_commands(page, colormap)
+    ).fold((vec![], vec![]), |(mut pages, mut errors), page_res| {
+        match page_res {
+            Ok(c) => pages.push(c),
+            Err(e) => errors.push(e),
+        }
+        (pages, errors)
+    });
+
+    if !errors.is_empty() {
+        return Err(errors.join("\n"))
+    }
+
+    let mut pages: Vec<ObjectId> = Vec::with_capacity(page_commands.len());
+    for content in page_commands {
+        let encoded = match content.encode() {
+            Ok(e) => e,
+            Err(err) => return Err(err.to_string()),
+        };
+
+        let content_id = doc.add_object(Stream::new(dictionary! {}, encoded));
+
+        let page_id = doc.add_object(dictionary!{
+            "Type" => "Page",
+            "Parent" => pages_id,
+            "MediaBox" => vec![0.into(), 0.into(), A4_WIDTH.into(), A4_HEIGHT.into()],
+            "Contents" => content_id,
+        });
+        pages.push(page_id);
+    }
+
+    Ok(pages)
+}
+
+
+/// Function to add an internal link annotation to a page
+fn add_internal_link(
+    doc: &mut Document,
+    page_id: ObjectId,
+    rect: [f64; 4],
+    destination_page_id: ObjectId,
+) -> Result<(), String> {
+    // Define the GoTo action
+    let action = dictionary! {
+        "Type" => "Action",
+        "S" => "GoTo",
+        "D" => vec![Object::Reference(destination_page_id), Object::Name("Fit".into())],
+    };
+
+    let action_id = doc.add_object(action);
+
+    // Define the link annotation
+    let annotation = dictionary! {
+        "Type" => "Annot",
+        "Subtype" => "Link",
+        "Rect" => rect.iter().map(|v| (*v).into()).collect::<Vec<_>>(),
+        "Border" => vec![0.into(), 0.into(), 0.into()], // No border
+        "A" => Object::Reference(action_id),
+    };
+
+    let annotation_id = doc.add_object(annotation);
+
+    // Add the annotation to the page's /Annots array
+    if let Some(Object::Dictionary(ref mut page_dict)) = doc.objects.get_mut(&page_id) {
+        // Retrieve or create the /Annots array
+        let annots = page_dict.as_hashmap_mut().entry("Annots".into()).or_insert_with(|| Object::Array(vec![]));
+
+        if let Object::Array(ref mut annots_array) = annots {
+            annots_array.push(Object::Reference(annotation_id));
+        } else {
+            // If /Annots exists but is not an array, return an error
+            return Err("Page /Annots is not an array".into());
+        }
+    } else {
+        return Err("Page object is not a dictionary".into());
+    }
+
+    Ok(())
+}
+
 pub fn get_bitmap(page: &Page, colormap: &ColorMap) -> Result<Vec<u8>, Vec<DecoderError>> {
     let (image, errors) = page.layers.iter()
         .filter(|l| !l.is_background())
@@ -100,7 +154,7 @@ pub fn get_bitmap(page: &Page, colormap: &ColorMap) -> Result<Vec<u8>, Vec<Decod
 }
 
 /// Exports a given page to a SVG String
-pub fn page_to_svg(page: &Page, colormap: &ColorMap) -> Result<Content, String> {
+fn page_to_commands(page: &Page, colormap: &ColorMap) -> Result<Content, String> {
     let (image, errors) = page.layers.iter()
         .filter(|l| !l.is_background())
         .filter_map(|l| l.content.as_ref())
