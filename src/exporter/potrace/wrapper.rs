@@ -1,5 +1,3 @@
-// src/potrace/wrapper.rs
-
 use lopdf::content::Operation;
 
 use super::{bindings::*, PdfColor};
@@ -190,6 +188,7 @@ impl Drop for PotraceParams {
     }
 }
 
+/// Generate a trace of the given bitmap.
 pub fn trace(bitmap: &Bitmap, params: &PotraceParams) -> Result<PotraceState, String> {
     unsafe {
         let state = potrace_trace(params.params, &bitmap.bitmap);
@@ -201,7 +200,8 @@ pub fn trace(bitmap: &Bitmap, params: &PotraceParams) -> Result<PotraceState, St
     }
 }
 
-pub fn generate_combined_svg(
+/// Will generate the combined [Operation]s for all the paths in a given image
+pub fn generate_combined_paths(
     paths: Vec<(PotraceState, PdfColor)>,
 ) -> Vec<Operation> {
     use lopdf::content::*;
@@ -240,31 +240,10 @@ pub fn generate_combined_svg(
     operations
 }
 
-/// # NOT COMPLETE
-/// 
-/// Tree structure looping over the path.
-unsafe fn loop_over_curves(mut path: *mut potrace_path_s) -> Vec<Operation> {
-    let mut operations = vec![];
-    if !path.is_null() {
-        while !path.is_null() {
-            let curve = (*path).curve;
-
-            operations.extend(process_curve(&curve));
-            
-            let mut child = (*path).childlist;
-            while !child.is_null() {
-                operations.extend(loop_over_curves(child));
-                child = (*child).sibling
-            }
-
-            path = (*path).sibling;
-        }
-    }
-    operations
-}
-
 /// Generates the [Operation]s for the given curve
 unsafe fn process_curve(curve: &potrace_curve_s) -> Vec<Operation> {
+    const Y: f64 = f_fmt::PAGE_HEIGHT as f64;
+
     if curve.n == 0 {
         return vec![];
     }
@@ -281,7 +260,7 @@ unsafe fn process_curve(curve: &potrace_curve_s) -> Vec<Operation> {
     // The starting position is the same as the ending one.
     let c0 = c[n-1][2];
     // Move to the starting position
-    operations.push(Operation::new("m", vec![c0.x.into(), c0.y.into()]));
+    operations.push(Operation::new("m", vec![c0.x.into(), (Y - c0.y).into()]));
 
     for i in 0..n {
         let tag = tags[i].unsigned_abs();
@@ -294,8 +273,8 @@ unsafe fn process_curve(curve: &potrace_curve_s) -> Vec<Operation> {
                 let c1 = c_array[1];
                 let c2 = c_array[2];
 
-                operations.push(Operation::new("l", vec![c1.x.into(), c1.y.into()]));
-                operations.push(Operation::new("l", vec![c2.x.into(), c2.y.into()]));
+                operations.push(Operation::new("l", vec![c1.x.into(), (Y - c1.y).into()]));
+                operations.push(Operation::new("l", vec![c2.x.into(), (Y - c2.y).into()]));
             }
             POTRACE_CURVETO => {
                 let c1 = c_array[0];
@@ -304,7 +283,7 @@ unsafe fn process_curve(curve: &potrace_curve_s) -> Vec<Operation> {
 
                 // Push the Bezier Curve
                 operations.push(Operation::new("c", [
-                    c1.x, c1.y, c2.x, c2.y, c3.x, c3.y
+                    c1.x, (Y - c1.y), c2.x, (Y - c2.y), c3.x, (Y - c3.y)
                 ].into_iter().map(|it| it.into()).collect()));
             }
             _ => {}

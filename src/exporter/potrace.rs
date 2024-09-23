@@ -6,7 +6,7 @@ use crate::decoder::{DecodedImage, ColorList, ColorMap};
 use crate::common::*;
 
 use lopdf::content::Operation;
-use wrapper::{Bitmap, PotraceParams, PotraceState, trace, generate_combined_svg};
+use wrapper::{Bitmap, PotraceParams, PotraceState, trace, generate_combined_paths};
 
 struct MultiColorBitmap {
     white_btmp: Bitmap,
@@ -26,7 +26,7 @@ pub fn trace_and_generate(image: DecodedImage, color_map: &ColorMap) -> Result<V
     bitmamps.add_color_map(color_map);
     let paths = bitmamps.trace(&params)?;
 
-    Ok(generate_combined_svg(paths))
+    Ok(generate_combined_paths(paths))
 }
 
 impl MultiColorBitmap {
