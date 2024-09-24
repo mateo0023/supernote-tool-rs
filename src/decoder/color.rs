@@ -60,6 +60,16 @@ impl ColorMap {
         }
     }
 
+    pub fn monochrome() -> Self {
+        Self {
+            black: BLACK,
+            darkgray: DARK_GRAY,
+            gray: GRAY,
+            white: WHITE,
+            transparent: TRANSPARENT,
+        }
+    }
+
     /// Maps the Supernote ColorCode to its corresponding Color
     /// 
     /// Defaults to [Black](Self::black).
@@ -124,10 +134,10 @@ pub fn format_color(color: ColorType) -> String {
 impl Default for ColorMap {
     fn default() -> Self {
         ColorMap {
-            black: BLACK,
-            darkgray: DARK_GRAY,
-            gray: GRAY,
-            white: WHITE,
+            black: [0x00, 0x00, 0x00, 0xff],
+            darkgray: [0x46, 0x69, 0xd6, 0xff],
+            gray: [0xfd, 0xfa, 0x75, 0xff],
+            white: [0xfe, 0xfe, 0xfe, 0xff],
             transparent: TRANSPARENT,
         }
     }

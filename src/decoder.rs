@@ -50,11 +50,12 @@ impl std::fmt::Display for DecoderError {
 
 impl std::error::Error for DecoderError {}
 
-pub fn decode_separate(data: &[u8]) -> Result<DecodedImage, DecoderError> {
+/// Decode a single Image/Layer into a [DecodedImage]
+pub fn decode_separate(data: &[u8], capacity: usize) -> Result<DecodedImage, DecoderError> {
     use std::collections::VecDeque;
 
     let mut data_iter = data.iter();
-    let mut image = DecodedImage::default();
+    let mut image = DecodedImage::with_capacity(capacity);
 
     let mut holder: Option<(u8, u8)> = None;
     let mut queue: VecDeque<(u8, usize)> = VecDeque::with_capacity(4);
@@ -132,6 +133,19 @@ fn adjust_tail_length(tail_length: u8, current_length: usize, total_length: usiz
 }
 
 impl DecodedImage {
+    pub const DEFAULT_CAPACITY: usize = PAGE_HEIGHT * PAGE_WIDTH;
+
+    pub fn with_capacity(capacity: usize) -> Self {
+        DecodedImage {
+            idx: 0,
+            capacity,
+            white: vec![false; capacity],
+            l_gray: vec![false; capacity],
+            d_gray: vec![false; capacity],
+            black: vec![false; capacity],
+        }
+    }
+
     pub fn push(&mut self, colorcode: u8, length: usize) -> Result<(), DecoderError>{
         use color::ColorList::*;
         match color::ColorList::decode(colorcode)? {
@@ -195,11 +209,11 @@ impl Default for DecodedImage {
     fn default() -> Self {
         Self {
             idx: 0,
-            capacity: PAGE_HEIGHT * PAGE_WIDTH,
-            white: vec![false; PAGE_HEIGHT * PAGE_WIDTH],
-            l_gray: vec![false; PAGE_HEIGHT * PAGE_WIDTH],
-            d_gray: vec![false; PAGE_HEIGHT * PAGE_WIDTH],
-            black: vec![false; PAGE_HEIGHT * PAGE_WIDTH],
+            capacity: Self::DEFAULT_CAPACITY,
+            white: vec![false; Self::DEFAULT_CAPACITY],
+            l_gray: vec![false; Self::DEFAULT_CAPACITY],
+            d_gray: vec![false; Self::DEFAULT_CAPACITY],
+            black: vec![false; Self::DEFAULT_CAPACITY],
         }
     }
 }

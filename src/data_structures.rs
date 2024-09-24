@@ -46,6 +46,10 @@ pub struct Title {
     pub title_level: TitleLevel,
     pub page_index: usize,
     pub position: u32,
+    pub coords: [i32; 4],
+    pub width: usize,
+    pub height: usize,
+    pub name: String,
 }
 #[derive(Debug, Serialize)]
 pub struct Link {
@@ -110,6 +114,12 @@ fn process_rect_to_corners(rect: Vec<i32>) -> [i32; 4] {
 // ###########################################################################################################
 // ###########################################################################################################
 
+impl Notebook {
+    pub fn update_title(&mut self, title_idx: usize, new_title: &str) {
+        self.titles[title_idx].name = new_title.to_string();
+    }
+}
+
 impl Title {
     /// It loops over the titles in [Metadata::footer::titles](metadata::Footer::titles) and maps it to a [Title] by calling [Title::from_meta].
     /// 
@@ -154,14 +164,25 @@ impl Title {
         // let bitmap_loc: u64 = metadata.get("TITLEBITMAP").unwrap().first().unwrap().parse().unwrap();
         let page_index = metadata.get("PAGE_NUMBER").unwrap().first().unwrap().parse::<usize>().unwrap() - 1;
 
-        let title_level = TitleLevel::from_meta(metadata);
+        let coords: Vec<i32> = metadata.get("TITLERECT").unwrap()[0].split(',').map(|v| v.parse().unwrap()).collect();
+        let width = coords[2].unsigned_abs() as usize;
+        let height = coords[3].unsigned_abs() as usize;
+        let coords = process_rect_to_corners(coords);
 
+        let title_level = TitleLevel::from_meta(metadata);
+        
+        let title = format!("Title at Page {}", page_index+1);
+        
         Ok(Title { 
             metadata: metadata.clone(),
             content: extract_key_and_read(file, metadata, "TITLEBITMAP").unwrap(),
             page_index,
             position: page_pos,
             title_level,
+            coords,
+            width,
+            height,
+            name: title,
         })
     }
 }

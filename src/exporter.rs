@@ -12,7 +12,7 @@ mod potrace;
 use lopdf::content::Content;
 use lopdf::{dictionary, Document, Object, ObjectId, Stream};
 
-pub fn to_pdf(notebook: &Notebook, colormap: &ColorMap) -> Result<Document, String> {
+fn to_pdf(notebook: &Notebook, colormap: &ColorMap) -> Result<Document, String> {
     let mut doc = Document::with_version("1.7");
     let base_page_id = doc.new_object_id();
 
@@ -84,7 +84,7 @@ fn add_toc(doc: &mut Document, titles: &[Title], page_ids: &[ObjectId], catalog_
     };
 
     let mut title_id_stack = std::collections::VecDeque::new();
-    for (i, title) in titles.iter().enumerate() {
+    for title in titles.iter() {
         while let Some((_id, queue_lvl)) = title_id_stack.back() {
             match title.title_level.cmp(queue_lvl) {
                 // If title's level is not closer to root, break the loop
@@ -102,14 +102,13 @@ fn add_toc(doc: &mut Document, titles: &[Title], page_ids: &[ObjectId], catalog_
         }
         let page = page_ids[title.page_index];
         let parent_id = title_id_stack.back().map(|(id, _lvl)| *id);
-        let title_name = format!("{} {}", i, title.title_level);
 
         // Create a new ObjectId for the bookmark
         let new_id = doc.new_object_id();
     
         // Create the bookmark dictionary
         let mut bookmark_dict = lopdf::Dictionary::new();
-        bookmark_dict.set("Title", Object::string_literal(title_name));
+        bookmark_dict.set("Title", Object::string_literal(title.name.clone()));
         bookmark_dict.set("Parent", Object::Reference(parent_id.unwrap_or(outlines_id)));
         bookmark_dict.set(
             "Dest",
@@ -264,7 +263,7 @@ pub fn get_bitmap(page: &Page, colormap: &ColorMap) -> Result<Vec<u8>, Vec<Decod
         .filter(|l| !l.is_background())
         .filter_map(|l| l.content.as_ref())
         // Decode layers
-        .map(|data| decode_separate(data))
+        .map(|data| decode_separate(data, DecodedImage::DEFAULT_CAPACITY))
         // Ignore errors
         .fold((DecodedImage::default(), vec![]), |(mut acc_img, mut acc_err), dec_res| {
             match dec_res {
@@ -287,7 +286,7 @@ fn page_to_commands(page: &Page, colormap: &ColorMap) -> Result<Content, String>
         .filter(|l| !l.is_background())
         .filter_map(|l| l.content.as_ref())
     {
-        image += decode_separate(data).map_err(|e| e.to_string())?;
+        image += decode_separate(data, DecodedImage::DEFAULT_CAPACITY).map_err(|e| e.to_string())?;
     }
 
     potrace::trace_and_generate(image, colormap).map(|operations| {
@@ -295,4 +294,22 @@ fn page_to_commands(page: &Page, colormap: &ColorMap) -> Result<Content, String>
             operations,
         }
     })
+}
+
+impl Notebook {
+    pub fn to_pdf(&self, colormap: &ColorMap) -> Result<Document, String> {
+        to_pdf(self, colormap)
+    }
+
+    pub fn to_pdf_file(&self, colormap: &ColorMap, path: &str) -> Result<std::fs::File, String> {
+        let mut doc = self.to_pdf(colormap)?;
+        doc.save(path).map_err(|e| e.to_string())
+    }
+}
+
+impl Title {
+    pub fn render_bitmap(&self) -> Result<Vec<u8>, DecoderError> {
+        let decoded = decode_separate(&self.content, self.width * self.height)?;
+        Ok(decoded.into_color(&ColorMap::default()))
+    }
 }
