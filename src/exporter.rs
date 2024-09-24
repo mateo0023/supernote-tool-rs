@@ -258,27 +258,6 @@ fn add_internal_link(
     Ok(())
 }
 
-pub fn get_bitmap(page: &Page, colormap: &ColorMap) -> Result<Vec<u8>, Vec<DecoderError>> {
-    let (image, errors) = page.layers.iter()
-        .filter(|l| !l.is_background())
-        .filter_map(|l| l.content.as_ref())
-        // Decode layers
-        .map(|data| decode_separate(data, DecodedImage::DEFAULT_CAPACITY))
-        // Ignore errors
-        .fold((DecodedImage::default(), vec![]), |(mut acc_img, mut acc_err), dec_res| {
-            match dec_res {
-                Ok(img) => acc_img += img,
-                Err(e) => acc_err.push(e),
-            };
-            (acc_img, acc_err)
-        });
-
-    if !errors.is_empty() {
-        return Err(errors);
-    }
-    Ok(image.into_color(colormap))
-}
-
 /// Exports a given page to the PDF Vector Commands
 fn page_to_commands(page: &Page, colormap: &ColorMap) -> Result<Content, String> {
     let mut image = DecodedImage::default();

@@ -168,6 +168,16 @@ impl DecodedImage {
         bitmap
     }
 
+    pub fn as_black_white(&self) -> Vec<u8> {
+        let mut bitmap = vec![255; self.capacity];
+        for (i, px) in bitmap.iter_mut().enumerate() {
+            if self.black[i] || self.d_gray[i] || self.l_gray[i] {
+                *px = 0;
+            }
+        }
+        bitmap
+    }
+
     fn get_color_at(&self, idx: usize) -> ColorList {
         use ColorList::*;
 

@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io;
 
+use crate::decoder::decode_separate;
+
 use super::io::extract_key_and_read;
 
 pub mod metadata;
@@ -171,11 +173,18 @@ impl Title {
 
         let title_level = TitleLevel::from_meta(metadata);
         
-        let title = format!("Title at Page {}", page_index+1);
+        let content = extract_key_and_read(file, metadata, "TITLEBITMAP").unwrap();
+        let title = {
+            let img = decode_separate(&content, width * height).unwrap().as_black_white();
+            match tesseract::ocr_from_frame(&img, width as i32, height as i32, 1, width as i32, "eng") {
+                Ok(t) => t,
+                Err(err) => todo!("{}", err),
+            }
+        };
         
         Ok(Title { 
             metadata: metadata.clone(),
-            content: extract_key_and_read(file, metadata, "TITLEBITMAP").unwrap(),
+            content,
             page_index,
             position: page_pos,
             title_level,

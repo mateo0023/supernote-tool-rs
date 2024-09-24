@@ -2,12 +2,12 @@ use crate::data_structures::{Notebook, Title};
 use crate::decoder::ColorMap;
 use crate::error::*;
 
-// #[derive(Debug)]
 pub struct MyApp {
     notebooks: Notebook,
     titles: Vec<TitleHolder>,
     colormap: ColorMap,
-    out_path: String
+    out_path: String,
+    out_err: Option<String>,
 }
 
 struct TitleHolder {
@@ -24,6 +24,7 @@ impl MyApp {
             titles,
             colormap: ColorMap::default(),
             out_path: "./test/out.pdf".to_string(),
+            out_err: None,
         }
     }
 }
@@ -32,16 +33,36 @@ impl eframe::App for MyApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         egui::CentralPanel::default().show(ctx, |ui| {
             if ui.button("Export to PDF").clicked() {
-                self.notebooks.to_pdf_file(&self.colormap, &self.out_path);
+                if let Err(e) = self.notebooks.to_pdf_file(&self.colormap, &self.out_path) {
+                    self.out_err = Some(e);
+                }
             }
 
-            ui.label(format!("Notebook Loaded with {} pages", self.notebooks.pages.len()));
+            if let Some(e) = &self.out_err {
+                ui.label(format!("Failed to save. Error: {}", e));
+            }
+
+            let mut title_bx = vec![];
             for title in &mut self.titles {
-                ui.horizontal(|ui| {
-                    ui.image(&title.img_texture);
-                    if ui.text_edit_singleline(&mut title.t).changed() {
-                        self.notebooks.update_title(title.title_id, &title.t);
-                    }
+                let txt_box = ui.text_edit_singleline(&mut title.t);
+                if txt_box.changed() {
+                    self.notebooks.update_title(title.title_id, &title.t);
+                }
+                title_bx.push((txt_box, title.img_texture.clone()));
+            }
+
+            if let Some((txt_box, texture)) = title_bx.iter().find(|(it, _)| it.has_focus()).or(title_bx.iter().find(|(i, _)| i.hovered())) {
+                let max_width = ctx.input(|i: &egui::InputState| i.screen_rect()).width() - txt_box.rect.right();
+                
+                egui::Window::new("Image")
+                .vscroll(false)
+                .current_pos(txt_box.rect.right_top())
+                .show(ctx, |ui| {
+                    ui.add(
+                        egui::Image::from_texture(texture)
+                        .maintain_aspect_ratio(true)
+                        .max_width(max_width)
+                    );
                 });
             }
         });
