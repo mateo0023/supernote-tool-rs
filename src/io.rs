@@ -1,5 +1,6 @@
 //! Loads the data and metadata
 
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, prelude::*, SeekFrom};
 
@@ -334,11 +335,14 @@ impl metadata::Metadata {
         };
         let pages = parse_pages(file, page_addrs)?;
 
+        let file_id = header.get("FILE_ID").unwrap()[0].clone();
+
         Ok(metadata::Metadata {
             version,
             footer,
             header,
             pages,
+            file_id,
         })
     }
 }
@@ -346,21 +350,25 @@ impl metadata::Metadata {
 impl Notebook {
     pub fn from_file(file: &mut File) -> io::Result<Self> {
         let metadata = Metadata::from_file(file)?;
-        let version = metadata.version;
-        // let mut keywords = Keyword::get_vec_from_meta(&metadata, file);
-        // todo!("Still need to work on the keywords");
-        let titles = Title::get_vec_from_meta(&metadata, file)?;
-        let links = Link::get_vec_from_meta(&metadata, file);
+        let file_id = metadata.file_id.clone();
+        let mut titles = Title::get_vec_from_meta(&metadata, file)?;
+        let links = Link::get_vec_from_meta(&metadata);
         let mut pages = Page::get_vec_from_meta(&metadata.pages, file);
+        titles.sort_by(|a, other| match a.page_index == other.page_index  {
+                true => a.position.cmp(&other.position),
+                false => a.page_index.cmp(&other.page_index),
+            });
         pages.sort_by_key(|p| p.page_num);
+
+        let page_id_map = HashMap::from_iter(pages.iter().map(|page| (page.page_id.clone(), page.page_num - 1)));
 
         Ok(Notebook {
             metadata,
-            version,
-            // keywords,
+            file_id,
             titles,
             links,
             pages,
+            page_id_map,
         })
     }
 }

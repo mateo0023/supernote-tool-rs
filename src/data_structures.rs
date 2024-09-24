@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs::File;
 use std::io;
 
@@ -11,46 +12,49 @@ pub mod file_format_consts {
 }
 
 use metadata::Metadata;
+use serde::Serialize;
 
 /// Will contain all the necessary information from the Notebook
 /// 
 /// # ToDo!
 /// * Keyword
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct Notebook {
     /// Is the [Metadata] of the `.note` file
     pub metadata: Metadata,
-    /// Is the version number, see [Metadata::version]
-    pub version: u32,
-    // /// A list containing all the [Keywords](Keyword)
-    // pub keywords: Vec<Keyword>,
+    /// Is the version number, see [Metadata::file_id]
+    pub file_id: String,
     /// A list containing all the [Titles](Title)
+    /// 
+    /// Titles will be sorted by Page and then Position
+    /// to facilitate Bookmark Generation
     pub titles: Vec<Title>,
     /// A list containing all the [Links](Link)
     pub links: Vec<Link>,
     /// A list containing all the [Pages](Page)
+    /// 
+    /// Pages are sortedß
     pub pages: Vec<Page>,
+    /// Map between PAGE_ID and page indexes.
+    pub page_id_map: HashMap<String, usize>,
 }
 
-#[derive(Debug)]
-pub struct Keyword {
-    pub page_number: usize,
-    pub metadata: metadata::MetaMap,
-}
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct Title {
     pub metadata: metadata::MetaMap,
     pub content: Vec<u8>,
+    pub title_level: TitleLevel,
     pub page_index: usize,
     pub position: u32,
 }
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct Link {
     pub metadata: metadata::MetaMap,
-    pub content: Option<Vec<u8>>,
-    pub page: Option<usize>,
+    pub start_page: usize,
+    pub link_type: LinkType,
+    pub coords: [i32; 4],
 }
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct Page {
     pub metadata: metadata::PageMeta,
     pub totalpath: Option<Vec<u8>>,
@@ -58,22 +62,45 @@ pub struct Page {
     pub recogn_text: Option<Vec<u8>>,
     pub layers: Vec<Layer>,
     pub page_num: usize,
+    pub page_id: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct Layer {
     pub metadata: metadata::MetaMap,
     pub content: Option<Vec<u8>>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Serialize)]
 pub enum LinkType {
-    #[default]
-    SameFile,
-    OtherFile,
-    WebLink,
+    /// A link to the same file, containing the page index
+    SameFile{page_id: String},
+    /// A link to the same file, containing:
+    /// * Page Index
+    /// * The other's file_id
+    OtherFile{page_id: String, file_id: String},
+    /// A link to a website, contains the link.
+    WebLink{link: String},
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Default, Hash, std::cmp::PartialEq, std::cmp::Eq, std::cmp::PartialOrd, std::cmp::Ord)]
+pub enum TitleLevel {
+    #[default]
+    BlackBack,
+    LightGray,
+    DarkGray,
+    Stripped,
+}
+
+fn process_rect_to_corners(rect: Vec<i32>) -> [i32; 4] {
+    if let [x1, y1, w, h, ..] = rect[..] {
+        [
+            x1, y1, x1 + w, y1 + h
+        ]
+    } else {
+        todo!("rect did not contain 4 elements {:?}", rect)
+    }
+}
 
 // ###########################################################################################################
 // ###########################################################################################################
@@ -82,25 +109,6 @@ pub enum LinkType {
 // ###########################################################################################################
 // ###########################################################################################################
 // ###########################################################################################################
-
-
-impl Notebook {
-    pub fn new(metadata: Metadata, file: &mut File) -> io::Result<Self> {
-        let version = metadata.version;
-
-        let titles = Title::get_vec_from_meta(&metadata, file).unwrap();
-        let links = Link::get_vec_from_meta(&metadata, file);
-        let pages = Page::get_vec_from_meta(&metadata.pages, file);
-
-        Ok(Notebook { 
-            metadata,
-            version,
-            titles,
-            links,
-            pages,
-        })
-    }
-}
 
 impl Title {
     /// It loops over the titles in [Metadata::footer::titles](metadata::Footer::titles) and maps it to a [Title] by calling [Title::from_meta].
@@ -146,26 +154,41 @@ impl Title {
         // let bitmap_loc: u64 = metadata.get("TITLEBITMAP").unwrap().first().unwrap().parse().unwrap();
         let page_index = metadata.get("PAGE_NUMBER").unwrap().first().unwrap().parse::<usize>().unwrap() - 1;
 
+        let title_level = TitleLevel::from_meta(metadata);
+
         Ok(Title { 
             metadata: metadata.clone(),
             content: extract_key_and_read(file, metadata, "TITLEBITMAP").unwrap(),
             page_index,
             position: page_pos,
+            title_level,
         })
     }
 }
 
 impl Link {
-    pub fn get_vec_from_meta(metadata: &Metadata, file: &mut File) -> Vec<Link> {
+    pub fn get_vec_from_meta(metadata: &Metadata) -> Vec<Link> {
         match &metadata.footer.links {
             Some(links) => links.iter().zip(Link::extract_page_numbers_from_meta(metadata).iter())
-                .map(|(link, &page_num)| Link {
-                    metadata: link.clone(),
-                    content: extract_key_and_read(file, link, "LINKBITMAP"),
-                    page: Some(page_num),
-                }).collect(),
+                .filter_map(|(link_meta, &page_num)| Link::new(link_meta, page_num, &metadata.file_id)).collect(),
             None => vec![],
         }
+    }
+
+    fn new(link_meta: &metadata::MetaMap, page_num: usize, file_id: &str) -> Option<Self> {
+        if Link::is_incoming(link_meta) {
+            return None;
+        }
+        Some(Link {
+            metadata: link_meta.clone(),
+            start_page: page_num,
+            link_type: LinkType::from_meta(link_meta, file_id),
+            coords: Self::get_link_rect(link_meta),
+        })
+    }
+
+    fn is_incoming(link_meta: &metadata::MetaMap) -> bool {
+        link_meta.get("LINKINOUT").unwrap()[0] == "1"
     }
 
     fn extract_page_numbers_from_meta(metadata: &Metadata) -> Vec<usize> {
@@ -181,6 +204,12 @@ impl Link {
                 k.parse::<usize>().ok().map(|page| page-1)
             )
             .collect()
+    }
+
+    fn get_link_rect(link_meta: &metadata::MetaMap) -> [i32; 4] {
+        process_rect_to_corners(link_meta.get("LINKRECT").unwrap()[0].split(',')
+            .map(|p| p.parse::<i32>().unwrap())
+            .collect())
     }
 }
 
@@ -199,6 +228,7 @@ impl Page {
             recogn_text: extract_key_and_read(file, &metadata.page_info, "RECOGNTEXT"),
             layers: Layer::get_vec_fom_vec(&metadata.layers, file),
             page_num: metadata.page_info.get("PAGE_NUMBER").unwrap()[0].parse().unwrap(),
+            page_id: metadata.page_info.get("PAGEID").unwrap()[0].clone(),
         }
     }
 }
@@ -227,5 +257,68 @@ impl Layer {
         } else {
             false
         }
+    }
+}
+
+impl LinkType {
+    const KEY_STYLE: &'static str = "LINKTYPE";
+    const KEY_FILE_ID: &'static str = "LINKFILEID";
+    const TO_PAGE: &'static str = "0";
+    const TO_WEB: &'static str = "4";
+    
+    pub fn from_meta(link_meta: &metadata::MetaMap, file_id: &str) -> Self {
+        let link_style = link_meta.get(Self::KEY_STYLE).unwrap()[0].as_str();
+        // Link to website
+        if link_style.eq(Self::TO_WEB) {
+            return LinkType::WebLink { link: link_meta.get("LINKFILE").unwrap()[0].clone() };
+        }
+        // Is internal/external
+        if link_style.eq(Self::TO_PAGE) {
+            let page_id = link_meta.get("PAGEID").unwrap()[0].clone();
+            let to_file_id = link_meta.get(Self::KEY_FILE_ID).unwrap()[0].as_str();
+
+            match to_file_id.eq(file_id) {
+                true => LinkType::SameFile { page_id },
+                false => LinkType::OtherFile { page_id, file_id: to_file_id.to_string() },
+            }
+        } else {
+            todo!("Not implemented linking to files (without page info)")
+        }
+    }
+}
+
+impl TitleLevel {
+    /// Looks at the `"TITLESTYLE"` and returns the appropiate
+    /// Type.
+    /// 
+    /// Returns the default value if no style is identified.
+    pub fn from_meta(title_meta: &metadata::MetaMap) -> Self {
+        let style = title_meta.get("TITLESTYLE").unwrap()[0].clone();
+        if style.eq("1000254") {
+            Self::BlackBack
+        } else if style.eq("1201000") {
+            Self::LightGray
+        } else if style.eq("1157254") {
+            Self::DarkGray
+        } else if style.eq("1000000") {
+            Self::Stripped
+        } else {
+            Self::default()
+        }
+    }
+}
+
+impl std::fmt::Display for TitleLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                TitleLevel::BlackBack => "BlackBack",
+                TitleLevel::LightGray => "LightGray",
+                TitleLevel::DarkGray => "DarkGray",
+                TitleLevel::Stripped => "Stripped",
+            }
+        )
     }
 }

@@ -16,6 +16,7 @@ pub use color::{ColorMap, ColorList};
 #[derive(Debug)]
 pub struct DecodedImage {
     idx: usize,
+    capacity: usize,
     pub white: Vec<bool>,
     pub l_gray: Vec<bool>,
     pub d_gray: Vec<bool>,
@@ -186,7 +187,7 @@ impl DecodedImage {
     }
 
     pub const fn capacity(&self) -> usize {
-        PAGE_HEIGHT * PAGE_WIDTH
+        self.capacity
     }
 }
 
@@ -194,6 +195,7 @@ impl Default for DecodedImage {
     fn default() -> Self {
         Self {
             idx: 0,
+            capacity: PAGE_HEIGHT * PAGE_WIDTH,
             white: vec![false; PAGE_HEIGHT * PAGE_WIDTH],
             l_gray: vec![false; PAGE_HEIGHT * PAGE_WIDTH],
             d_gray: vec![false; PAGE_HEIGHT * PAGE_WIDTH],
@@ -202,41 +204,14 @@ impl Default for DecodedImage {
     }
 }
 
-impl std::ops::Add for DecodedImage {
-    type Output = Self;
-
-    fn add(self, rhs: Self) -> Self::Output {
-        let mut res = Self {
-            idx: self.idx.max(rhs.idx),
-            white: self.white,
-            l_gray: self.l_gray,
-            d_gray: self.d_gray,
-            black: self.black,
-        };
-        for idx in 0..res.idx {
-            res.white[idx] |= rhs.white[idx];
-            res.l_gray[idx] |= rhs.l_gray[idx];
-            res.d_gray[idx] |= rhs.d_gray[idx];
-            res.black[idx] |= rhs.black[idx];
-        }
-        res
-    }
-}
-
 impl std::ops::AddAssign for DecodedImage {
     fn add_assign(&mut self, rhs: Self) {
-        self.idx = self.idx.max(rhs.idx);
+        self.idx = self.idx.max(rhs.idx).min(self.capacity);
         for idx in 0..self.idx {
             self.white[idx] |= rhs.white[idx];
             self.l_gray[idx] |= rhs.l_gray[idx];
             self.d_gray[idx] |= rhs.d_gray[idx];
             self.black[idx] |= rhs.black[idx];
         }
-    }
-}
-
-impl std::iter::Sum for DecodedImage {
-    fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
-        iter.fold(DecodedImage::default(), |acc, i| acc + i)
     }
 }

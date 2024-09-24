@@ -12,6 +12,7 @@ pub type MetaMap = HashMap<String, Vec<String>>;
 pub struct Metadata {
     /// The version number, an 8-digit integer
     pub version: u32,
+    pub file_id: String,
     /// The [Footer] of the file, containing all the metadata of where the [header](Metadata::header) and [pages](Metadata::pages) are in the file
     pub footer: Footer,
     /// Contains a lot of metadata on device information and file status.
@@ -65,13 +66,5 @@ impl Footer {
     /// Simply calls `get` on the [Footer::main], see [MetaMap]
     pub fn get(&self, k: &str) -> Option<&Vec<String>> {
         self.main.get(k)
-    }
-
-    /// Retuns the page numbers of all the titles as ordered by page
-    pub fn get_page_numbers_with_key(&self, key: &str) -> Vec<usize> {
-        self.main.keys().filter_map(|k| match k.starts_with(key) {
-            true => Some(k[6..10].parse::<usize>().unwrap()),
-            false => None,
-        }).collect()
     }
 }

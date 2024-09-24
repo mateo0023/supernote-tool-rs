@@ -21,17 +21,17 @@ const COLORCODE_BLACK: u8 = 0x61;
 /// The color Code that corresponds to BACKGROUND
 const COLORCODE_BACKGROUND: u8 = 0x62;
 /// The color Code that corresponds to DARK_GRAY
-const COLORCODE_DARK_GRAY: u8 = 0x63;
+const COLORCODE_DARK_GRAY: u8 = 0x9D;
 /// The color Code that corresponds to GRAY
-const COLORCODE_GRAY: u8 = 0x64;
+const COLORCODE_GRAY: u8 = 0xC9;
 /// The color Code that corresponds to WHITE
 const COLORCODE_WHITE: u8 = 0x65;
 /// The color Code that corresponds to MARKER_BLACK
 const COLORCODE_MARKER_BLACK: u8 = 0x66;
 /// The color Code that corresponds to MARKER_DARK_GRAY
-const COLORCODE_MARKER_DARK_GRAY: u8 = 0x67;
+const COLORCODE_MARKER_DARK_GRAY: u8 = 0x9E;
 /// The color Code that corresponds to MARKER_GRAY
-const COLORCODE_MARKER_GRAY: u8 = 0x68;
+const COLORCODE_MARKER_GRAY: u8 = 0xCA;
 
 #[derive(Debug)]
 pub struct ColorMap {
@@ -50,12 +50,12 @@ impl ColorMap {
     /// 2. [Dark Grey](Self::darkgray)
     /// 3. [Gray](Self::gray)
     /// 4. [White](Self::white)
-    pub fn new(colors: &[ColorType; 4]) -> Self {
+    pub fn new(black: ColorType, darkgray: ColorType, gray: ColorType, white: ColorType) -> Self {
         ColorMap {
-            black: colors[0],
-            darkgray: colors[1],
-            gray: colors[2],
-            white: colors[3],
+            black,
+            darkgray,
+            gray,
+            white,
             transparent: TRANSPARENT,
         }
     }

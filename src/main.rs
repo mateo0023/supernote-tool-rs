@@ -15,9 +15,16 @@ mod error {
 mod ui;
 
 fn main() {
-    let notebook = io::load("./test/v15.note").unwrap();
+    let notebook = io::load("./test/Test Doc.note").unwrap();
 
-    let handle = exporter::to_pdf(&notebook, &decoder::ColorMap::default());
+    let colormap = decoder::ColorMap::new(
+        [0x00, 0x00, 0x00, 0xff],
+        [0x46, 0x69, 0xd6, 0xff],
+        [0xfd, 0xfa, 0x75, 0xff],
+        [0xfe, 0xfe, 0xfe, 0xff]
+    );
+
+    let handle = exporter::to_pdf(&notebook, &colormap);
     if let Ok(mut pdf) = handle {
         let _ = pdf.save("./test/out.pdf");
     }
