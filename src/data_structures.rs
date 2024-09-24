@@ -175,9 +175,9 @@ impl Title {
         
         let content = extract_key_and_read(file, metadata, "TITLEBITMAP").unwrap();
         let title = {
-            let img = decode_separate(&content, width * height).unwrap().as_black_white();
+            let img = get_blurred_image(&content, width, height);
             match tesseract::ocr_from_frame(&img, width as i32, height as i32, 1, width as i32, "eng") {
-                Ok(t) => t,
+                Ok(t) => t.chars().filter(char::is_ascii).collect(),
                 Err(err) => todo!("{}", err),
             }
         };
@@ -194,6 +194,41 @@ impl Title {
             name: title,
         })
     }
+}
+
+fn get_blurred_image(content: &[u8], width: usize, height: usize) -> Vec<u8> {
+    blur_image(
+        &decode_separate(content, width * height).unwrap().as_black_white(),
+        width, height
+    )
+}
+
+fn blur_image(img: &[u8], w: usize, h: usize) -> Vec<u8> {
+    const R: usize = 3;
+    let mut blurred = Vec::from(img);
+    let get_i = move |x: usize, y: usize| x + y * w;
+
+    for idx in 0..(w*h) {
+        let x_c = idx % w;
+        let y_c = idx / w;
+        //Only blur pixel if not black
+        if img[get_i(x_c, y_c)] > 100 {
+            let min_x = x_c.saturating_sub(R);
+            let max_x = (x_c + R + 1).min(w);
+            let min_y = y_c.saturating_sub(R);
+            let max_y = (y_c + R + 1).min(h);
+
+            let points: Vec<_> = (min_x..max_x)
+                .flat_map(|x| (min_y..max_y)
+                    .map(move |y| get_i(x, y))
+                ).collect();
+            let weight = points.len() as f32;
+            let av = points.into_iter().map(|i| img[i] as f32).sum::<f32>() / weight;
+            blurred[get_i(x_c, y_c)] = av as u8;
+        };
+    }
+
+    blurred
 }
 
 impl Link {
