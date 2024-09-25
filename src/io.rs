@@ -78,9 +78,9 @@ const LAYER_KEYS: [&str; 5] = ["MAINLAYER", "LAYER1", "LAYER2", "LAYER3", "BGLAY
 
 
 /// Loads
-pub fn load(path: &str) -> io::Result<Notebook> {
-    let name = std::path::Path::new(path).file_name().unwrap().to_str().unwrap();
-    let mut file = File::open(path)?;
+pub fn load(path: std::path::PathBuf) -> io::Result<Notebook> {
+    let name = path.file_name().unwrap().to_str().unwrap();
+    let mut file = File::open(path.clone())?;
 
     Notebook::from_file(&mut file, name.to_string())
 }

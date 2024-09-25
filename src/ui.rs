@@ -1,12 +1,15 @@
 use std::error::Error;
 use std::cmp::*;
-
 use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
+use rfd::FileDialog;
 
 use crate::data_structures::{Notebook, Title, TitleLevel};
 use crate::decoder::ColorMap;
 use crate::error::*;
+
+const SETTINGS_PATH: &str = "./test/config.json";
 
 pub struct MyApp {
     app_cache: AppCache,
@@ -19,6 +22,7 @@ pub struct MyApp {
 
 #[derive(Default, Serialize, Deserialize)]
 struct TitleHolder {
+    file_id: String,
     file_name: String,
     /// List of titles in the file.
     titles: Vec<TitleEditor>,
@@ -47,7 +51,7 @@ struct TitleEditor {
 #[derive(Default, Serialize, Deserialize)]
 pub struct AppCache {
     /// Maps between file_id and Title Cache
-    notebooks: HashMap<String, HashMap<TitleCache, TitleCache>>
+    notebooks: HashMap<String, Vec<TitleCache>>
 }
 
 /// Will be used to store the relevant information
@@ -64,21 +68,19 @@ pub struct TitleCache {
 }
 
 impl MyApp {
-    pub fn new(notebook: Notebook, ctx: &egui::Context) -> Result<Self, Box<dyn Error>> {
-        let titles = TitleHolder::from_notebook(&notebook, ctx);
-        let app_cache = AppCache::from_note(&notebook)?;
-
-        Ok(MyApp {
-            notebooks: vec![notebook],
-            titles: vec![titles],
+    pub fn new() -> Self {
+        MyApp {
+            notebooks: vec![],
+            titles: vec![],
             colormap: ColorMap::default(),
             out_path: "./test/out.pdf".to_string(),
             out_err: None,
-            app_cache,
-        })
+            app_cache: AppCache::load_or_default(),
+        }
     }
 
     pub fn add_notebook(&mut self, mut notebook: Notebook, ctx: &egui::Context) -> Result<(), Box<dyn Error>> {
+        println!("Adding Notebook");
         self.app_cache.load_or_add(&mut notebook)?;
         let new_titles = TitleHolder::from_notebook(&notebook, ctx);
         
@@ -90,12 +92,15 @@ impl MyApp {
 
     /// Will update the titles and render the [notebook(s)](Self::notebooks)
     /// into a PDF (or PDFs).
-    fn package_and_export(&mut self) {
-        for holder in &self.titles {
-            for (idx, title) in holder.titles.iter().enumerate() {
-                let (id, title) = title.get_data();
+    fn package_and_export(&mut self) -> Result<(), Box<dyn Error>> {
+        self.update_cache();
+        self.app_cache.save()?;
+
+        for (idx, holder) in self.titles.iter().enumerate() {
+            for title in holder.titles.iter() {
+                let (id, name) = title.get_data();
                 if let Some(id) = id {
-                    self.notebooks[idx].update_title_at_idx(id, title);
+                    self.notebooks[idx].update_title_at_idx(id, name);
                 }
             }
         }
@@ -105,14 +110,38 @@ impl MyApp {
                     .push_str(format!("\n{}", e).as_str());
             }
         }
+        
+        Ok(())
+    }
+
+    fn update_cache(&mut self) {
+        for holder in &self.titles {
+            let (k, v) = holder.as_list();
+            self.app_cache.update(k, v);
+        }
     }
 }
 
 impl eframe::App for MyApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         egui::CentralPanel::default().show(ctx, |ui| {
-            if ui.button("Export to PDF").clicked() {
-                self.package_and_export();
+            if ui.button("Select File").clicked() {
+                if let Some(path_list) = FileDialog::new().add_filter("Supernote File", &["note"]).pick_files() {
+                    for path in path_list {
+                        match crate::io::load(path) {
+                            Ok(note) => if let Err(e) = self.add_notebook(note, ctx) {
+                                todo!("Unable to add notebook {}", e);
+                            },
+                            Err(e) => todo!("Unable to load with e {}", e),
+                        }
+                    }
+                }
+            }
+
+            if !self.notebooks.is_empty() && ui.button("Export to PDF").clicked() {
+                if let Err(e) = self.package_and_export() {
+                    self.out_err = Some(format!("{e}"));
+                }
             }
 
             if let Some(e) = &self.out_err {
@@ -156,7 +185,11 @@ impl Title {
 
 impl TitleHolder {
     pub fn from_notebook(notebook: &Notebook, ctx: &egui::Context) -> Self {
-        let mut titles = TitleHolder::default();
+        let mut titles = TitleHolder {
+            file_id: notebook.file_id.clone(),
+            file_name: notebook.name.clone(),
+            titles: vec![],
+        };
         notebook.titles.iter().enumerate()
             .filter_map(|(idx, title)| {
                 let page_id = notebook.get_page_id(title.page_index)?;
@@ -165,6 +198,11 @@ impl TitleHolder {
             )
             .for_each(|(title, lvl)| titles.add_title(title, lvl));
         titles
+    }
+
+    pub fn as_list(&self) -> (String, Vec<TitleCache>) {
+        let list = self.titles.iter().flat_map(|t| t.as_cache_list()).collect();
+        (self.file_id.clone(), list)
     }
 
     pub fn add_title(&mut self, title: TitleEditor, lvl: TitleLevel) {
@@ -203,7 +241,7 @@ impl TitleEditor {
     }
 
     pub fn add_child(&mut self, title: TitleEditor, lvl: TitleLevel) {
-        if self.level + 1 == lvl.into() {
+        if self.level + 1 == Into::<i32>::into(lvl) {
             // Reached the correct level
             let ch = self.children.get_or_insert(vec![]);
             ch.push(title);
@@ -212,6 +250,25 @@ impl TitleEditor {
             // Create a default (empty title)
             let ch = self.children.get_or_insert(vec![TitleEditor::default()]);
             ch.last_mut().unwrap().add_child(title, lvl);
+        }
+    }
+
+    pub fn as_cache_list(&self) -> Vec<TitleCache> {
+        match &self.children {
+            Some(ch) => {
+                let mut c: Vec<_> = ch.iter().flat_map(|t| t.as_cache_list()).collect();
+                c.push(self.as_single_cache());
+                c
+            },
+            None => vec![self.as_single_cache()],
+        }
+    }
+
+    fn as_single_cache(&self) -> TitleCache {
+        TitleCache {
+            title: self.title.clone(),
+            page_id: self.page_id.clone(),
+            coords: self.coords,
         }
     }
 
@@ -248,14 +305,20 @@ impl TitleEditor {
 }
 
 impl AppCache {
-    pub fn from_note(notebook: &Notebook) -> Result<Self, Box<dyn Error>> {
-        let title_cache = TitleCache::from_notebook(notebook)?;
-        let mut map = HashMap::new();
-        map.insert(notebook.file_id.clone(), title_cache);
+    pub fn load_or_default() -> Self {
+        match std::fs::File::open(SETTINGS_PATH) {
+            Ok(f) => match serde_json::from_reader(f) {
+                Ok(cache) => cache,
+                Err(e) => todo!("Serde: {}", e),
+            },
+            Err(_) => Default::default(),
+        }
+    }
 
-        Ok(AppCache {
-            notebooks: map,
-        })
+    /// Replaces the Cache data at the key ([file_id](Notebook::file_id) by the new
+    /// [TitleCache]
+    pub fn update(&mut self, k: String, v: Vec<TitleCache>) {
+        self.notebooks.insert(k, v);
     }
 
     /// Either updates the [notebook](Notebook)'s titles or it 
@@ -263,18 +326,18 @@ impl AppCache {
     pub fn load_or_add(&mut self, notebook: &mut Notebook) -> Result<(), Box<dyn Error>> {
         match self.notebooks.get_mut(&notebook.file_id) {
             Some(cache) => {
+                println!("Already Had in Cache");
                 // Already had cache, update title.
-                let updated_titles = TitleCache::from_notebook(notebook)?;
-                cache.retain(|t, _| updated_titles.contains_key(t));
-                for (k, v) in updated_titles {
-                    // Update if necessary and add create the TitleEditor
-                    match cache.get(&k) {
-                        Some(v) => {
-                            notebook.update_title_by_page(&v.page_id, v.coords, &v.title);
-                        },
-                        None => {
-                            cache.insert(k, v);
-                        },
+                let mut titles = TitleCache::from_notebook(notebook)?;
+                std::mem::swap(cache, &mut titles);
+                let old_cache = titles;
+                for c in old_cache {
+                    for (i, other) in cache.iter_mut().enumerate() {
+                        if other.equals(&c) {
+                            notebook.update_title_at_idx(i, &c.title);
+                            other.title = c.title;
+                            break;
+                        }
                     }
                 }
             },
@@ -287,16 +350,25 @@ impl AppCache {
 
         Ok(())
     }
+
+    pub fn save(&self) -> Result<(), Box<dyn Error>> {
+        let f = std::fs::File::create(SETTINGS_PATH)?;
+        serde_json::to_writer_pretty(f, self)?;
+        Ok(())
+    }
 }
 
 impl TitleCache {
-    pub fn from_notebook(notebook: &Notebook) -> Result<HashMap<Self, Self>, Box<dyn Error>> {
-        let mut cached_titles = HashMap::new();
+    pub fn from_notebook(notebook: &Notebook) -> Result<Vec<Self>, Box<dyn Error>> {
+        // let mut cached_titles = HashMap::new();
+        let mut ls = vec![];
         for title in &notebook.titles {
             let title = TitleCache::new(title, notebook)?;
-            cached_titles.insert(title.clone(), title);
+            // cached_titles.insert(title.clone(), title);
+            ls.push(title);
         }
-        Ok(cached_titles)
+        // Ok(cached_titles)
+        Ok(ls)
     }
 
     pub fn new(title: &Title, notebook: &Notebook) -> Result<Self, Box<dyn Error>> {
@@ -328,12 +400,3 @@ impl std::hash::Hash for TitleCache {
     }
 }
 
-impl From<TitleEditor> for TitleCache {
-    fn from(value: TitleEditor) -> Self {
-        TitleCache {
-            title: value.title,
-            page_id: value.page_id,
-            coords: value.coords,
-        }
-    }
-}

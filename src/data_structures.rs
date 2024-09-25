@@ -173,27 +173,6 @@ impl Notebook {
     pub fn get_page_id(&self, index: usize) -> Option<String> {
         self.pages.get(index).map(|page| page.page_id.clone())
     }
-
-    /// Gets the page's index (if it exists).
-    pub fn get_page_index(&self, id: &str) -> Option<usize> {
-        self.page_id_map.get(id).copied()
-    }
-
-    /// Will update the title's [name](Self::name) given the
-    /// `page_id` and the title's coordinates on the page.
-    pub fn update_title_by_page(&mut self, page_id: &str, title_coords: [i32; 4], new_name: &str) {
-        if let Some(idx) = self.get_page_index(page_id) {
-            // Go over titles
-            for title in self.titles.iter_mut() {
-                // If same page & locaiton, assume it's the one
-                // and exit.
-                if title.page_index == idx && title.coords == title_coords {
-                    title.name = new_name.to_string();
-                    break;
-                }
-            }
-        }
-    }
 }
 
 impl Title {
@@ -251,7 +230,7 @@ impl Title {
         let title = {
             let img = get_blurred_image(&content, width, height);
             match tesseract::ocr_from_frame(&img, width as i32, height as i32, 1, width as i32, "eng") {
-                Ok(t) => t.chars().filter(char::is_ascii).collect(),
+                Ok(t) => t.chars().filter(|c| c.is_ascii() || *c == '\n').collect(),
                 Err(err) => todo!("{}", err),
             }
         };

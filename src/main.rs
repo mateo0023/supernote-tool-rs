@@ -15,12 +15,8 @@ mod error {
 mod ui;
 
 fn main() {
-    let notebook = io::load("./test/Test Doc.note").unwrap();
-
-    let _ = eframe::run_native("SuperNote Exporter", eframe::NativeOptions::default(), Box::new(|ctx| {
-        match ui::MyApp::new(notebook, &ctx.egui_ctx) {
-            Ok(app) => Ok(Box::new(app)),
-            Err(e) => todo!("{e}"),
-        }
+    let app = ui::MyApp::new();
+    let _ = eframe::run_native("SuperNote Exporter", eframe::NativeOptions::default(), Box::new(|_ctx| {
+        Ok(Box::new(app))
     }));
 }
