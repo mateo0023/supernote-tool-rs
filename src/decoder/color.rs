@@ -10,10 +10,6 @@ pub enum ColorList {
     Transparent,
 }
 
-const            BLACK: ColorType = [0, 0, 0, 0xff];
-const        DARK_GRAY: ColorType = [0x9d, 0x9d, 0x9d, 0xff];
-const             GRAY: ColorType = [0xc9, 0xc9, 0xc9, 0xff];
-const            WHITE: ColorType = [0xfe, 0xfe, 0xfe, 0xff];
 const      TRANSPARENT: ColorType = [0xff, 0xff, 0xff, 0];
 
 /// The color Code that corresponds to BLACK
@@ -43,52 +39,6 @@ pub struct ColorMap {
 }
 
 impl ColorMap {
-    /// Creates a new ColorMap Object with the given colors and compatibility colors.
-    /// 
-    /// The colors should be ordered:
-    /// 1. [Black](Self::black)
-    /// 2. [Dark Grey](Self::darkgray)
-    /// 3. [Gray](Self::gray)
-    /// 4. [White](Self::white)
-    pub fn new(black: ColorType, darkgray: ColorType, gray: ColorType, white: ColorType) -> Self {
-        ColorMap {
-            black,
-            darkgray,
-            gray,
-            white,
-            transparent: TRANSPARENT,
-        }
-    }
-
-    pub fn monochrome() -> Self {
-        Self {
-            black: BLACK,
-            darkgray: DARK_GRAY,
-            gray: GRAY,
-            white: WHITE,
-            transparent: TRANSPARENT,
-        }
-    }
-
-    /// Maps the Supernote ColorCode to its corresponding Color
-    /// 
-    /// Defaults to [Black](Self::black).
-    pub fn get(&self, colorcode: u8) -> Result<ColorType, super::DecoderError> {
-        match ColorList::decode(colorcode)? {
-            ColorList::White => Ok(self.black),
-            ColorList::LightGray => Ok(self.gray),
-            ColorList::DarkGray => Ok(self.darkgray),
-            ColorList::Black => Ok(self.black),
-            ColorList::Transparent => Ok(self.transparent),
-        }
-    }
-
-    /// Similar to [Self::get], but it will repeat the resulting [color](ColorType)
-    /// by `length` as to complete the [vector](Vec<u8>) of RBGA values.
-    pub fn get_bytes(&self, colorcode: u8, length: usize) -> Result<Vec<u8>, super::DecoderError> {
-        Ok(self.get(colorcode)?.repeat(length))
-    }
-
     /// Will return the appropiate [RGBA color](ColorType)
     /// given a [color enum](ColorList).
     pub fn map(&self, c: ColorList) -> ColorType {
@@ -115,20 +65,6 @@ impl ColorMap {
             c[2] as f64 / 255.,
         ]
     }
-
-    pub fn get_color_hex(&self, color: ColorList) -> String {
-        match color {
-            ColorList::White => format_color(self.white),
-            ColorList::LightGray => format_color(self.gray),
-            ColorList::DarkGray => format_color(self.darkgray),
-            ColorList::Black => format_color(self.black),
-            ColorList::Transparent => format_color(self.transparent),
-        }
-    }
-}
-
-pub fn format_color(color: ColorType) -> String {
-    format!("#{:02X}{:02X}{:02X}", color[0], color[1], color[2])
 }
 
 impl Default for ColorMap {

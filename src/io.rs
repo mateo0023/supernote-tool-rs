@@ -30,7 +30,7 @@ pub mod f_fmt {
     pub type AddrType = u32;
     
     /// The possible Keywords in the `.note` file that are used for metadata.
-    pub enum Keyword {
+    pub enum MKeyword {
         Keyword,
         Title,
         Link,
@@ -38,19 +38,19 @@ pub mod f_fmt {
     }
 
 
-    impl std::fmt::Display for Keyword {
+    impl std::fmt::Display for MKeyword {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             write!(f, "{}", self.as_str())
         }
     }
 
-    impl Keyword {
+    impl MKeyword {
         pub fn as_str(&self) -> &'static str {
             match self {
-                Keyword::Keyword => "KEYWORD_",
-                Keyword::Title => "TITLE_",
-                Keyword::Link =>  "LINKO_",
-                Keyword::Page =>  "PAGE",
+                MKeyword::Keyword => "KEYWORD_",
+                MKeyword::Title => "TITLE_",
+                MKeyword::Link =>  "LINKO_",
+                MKeyword::Page =>  "PAGE",
             }
         }
 
@@ -64,16 +64,11 @@ pub mod f_fmt {
         /// [String]
         pub fn page_number_str(&self, key: &str) -> String {
             match self {
-                Keyword::Keyword => todo!(),
-                Keyword::Title
-                | Keyword::Link => key[6..10].to_string(),
-                Keyword::Page => key[4..].to_string(),
+                MKeyword::Keyword => todo!(),
+                MKeyword::Title
+                | MKeyword::Link => key[6..10].to_string(),
+                MKeyword::Page => key[4..].to_string(),
             }
-        }
-
-        /// Calls [page_number_str](Self::page_number_str) removes one and returns as [usize] (failing if not properly parsed).
-        pub fn page_index(&self, key: &str) -> usize {
-            self.page_number_str(key).parse::<usize>().unwrap() - 1
         }
     }
 
@@ -161,7 +156,7 @@ fn parse_meta_block(file: &mut File, addr: u64) -> io::Result<Option<MetaMap>> {
 /// Collecting all of them into a single vector of ([`AddrType`](f_fmt::AddrType), [String])
 fn get_keyword_addresses(
     metadata: &MetaMap,
-    keyword: f_fmt::Keyword,
+    keyword: f_fmt::MKeyword,
 ) -> Option<Vec<(f_fmt::AddrType, String)>> {
     let addresses: Vec<(f_fmt::AddrType, String)> = metadata
         .iter()
@@ -203,7 +198,7 @@ fn parse_addresses_to_meta(file: &mut File, k_addrs: Vec<(f_fmt::AddrType, Strin
 }
 
 /// Does what it says
-fn get_all_meta_on_keyword(file: &mut File, meta: &MetaMap, keyword: f_fmt::Keyword) -> Option<Vec<MetaMap>> {
+fn get_all_meta_on_keyword(file: &mut File, meta: &MetaMap, keyword: f_fmt::MKeyword) -> Option<Vec<MetaMap>> {
     get_keyword_addresses(meta, keyword).map(|k_addrs| parse_addresses_to_meta(file, k_addrs))
 }
 
@@ -291,11 +286,11 @@ impl metadata::Footer {
             None => return Err(io::ErrorKind::InvalidData.into()),
         };
 
-        let keywords_meta = get_all_meta_on_keyword(file, &footer, f_fmt::Keyword::Keyword);
+        let keywords_meta = get_all_meta_on_keyword(file, &footer, f_fmt::MKeyword::Keyword);
 
-        let titles_meta = get_all_meta_on_keyword(file, &footer, f_fmt::Keyword::Title);
+        let titles_meta = get_all_meta_on_keyword(file, &footer, f_fmt::MKeyword::Title);
 
-        let links_meta = get_all_meta_on_keyword(file, &footer, f_fmt::Keyword::Link);
+        let links_meta = get_all_meta_on_keyword(file, &footer, f_fmt::MKeyword::Link);
 
         Ok(metadata::Footer::new(footer, keywords_meta, titles_meta, links_meta))
     }
@@ -329,7 +324,7 @@ impl metadata::Metadata {
             None => return Err(io::ErrorKind::InvalidData.into()),
         };
 
-        let page_addrs = match get_keyword_addresses(&footer.main, f_fmt::Keyword::Page) {
+        let page_addrs = match get_keyword_addresses(&footer.main, f_fmt::MKeyword::Page) {
             Some(p) => p,
             None => return Err(io::ErrorKind::InvalidData.into()),
         };

@@ -118,7 +118,9 @@ fn process_rect_to_corners(rect: Vec<i32>) -> [i32; 4] {
 
 impl Notebook {
     pub fn update_title(&mut self, title_idx: usize, new_title: &str) {
-        self.titles[title_idx].name = new_title.to_string();
+        if let Some(title) = self.titles.get_mut(title_idx) {
+            title.name = new_title.to_string();
+        }
     }
 }
 
@@ -385,5 +387,16 @@ impl std::fmt::Display for TitleLevel {
                 TitleLevel::Stripped => "Stripped",
             }
         )
+    }
+}
+
+impl From<TitleLevel> for i32 {
+    fn from(value: TitleLevel) -> Self {
+        match value {
+            TitleLevel::BlackBack => 1,
+            TitleLevel::LightGray => 2,
+            TitleLevel::DarkGray => 3,
+            TitleLevel::Stripped => 4,
+        }
     }
 }
