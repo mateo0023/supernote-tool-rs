@@ -158,6 +158,8 @@ impl DecodedImage {
         Ok(())
     }
 
+    /// Processes consumes itself into an RGBA image
+    /// of [ColorType](color::ColorType)
     pub fn into_color(self, colormap: &ColorMap) -> Vec<u8> {
         let mut bitmap = Vec::with_capacity(std::mem::size_of::<color::ColorType>() * self.capacity());
 
@@ -168,6 +170,8 @@ impl DecodedImage {
         bitmap
     }
 
+    /// Collects the image into a black-white
+    /// singe-byte per pixel
     pub fn as_black_white(&self) -> Vec<u8> {
         let mut bitmap = vec![255; self.capacity];
         for (i, px) in bitmap.iter_mut().enumerate() {

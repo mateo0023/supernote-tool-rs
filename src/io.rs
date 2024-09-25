@@ -79,9 +79,10 @@ const LAYER_KEYS: [&str; 5] = ["MAINLAYER", "LAYER1", "LAYER2", "LAYER3", "BGLAY
 
 /// Loads
 pub fn load(path: &str) -> io::Result<Notebook> {
+    let name = std::path::Path::new(path).file_name().unwrap().to_str().unwrap();
     let mut file = File::open(path)?;
 
-    Notebook::from_file(&mut file)
+    Notebook::from_file(&mut file, name.to_string())
 }
 
 /// Looks at the beggining of the file where the file version should be.
@@ -343,7 +344,7 @@ impl metadata::Metadata {
 }
 
 impl Notebook {
-    pub fn from_file(file: &mut File) -> io::Result<Self> {
+    pub fn from_file(file: &mut File, name: String) -> io::Result<Self> {
         let metadata = Metadata::from_file(file)?;
         let file_id = metadata.file_id.clone();
         let mut titles = Title::get_vec_from_meta(&metadata, file)?;
@@ -364,6 +365,7 @@ impl Notebook {
             links,
             pages,
             page_id_map,
+            name,
         })
     }
 }

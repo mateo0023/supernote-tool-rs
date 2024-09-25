@@ -2,6 +2,7 @@
 //! the namespace clean.
 
 use crate::common::PdfColor;
+/// For RBGA images.
 pub type ColorType = [u8; 4];
 
 #[derive(Debug, Clone, Copy)]

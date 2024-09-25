@@ -24,7 +24,9 @@ use serde::Serialize;
 pub struct Notebook {
     /// Is the [Metadata] of the `.note` file
     pub metadata: Metadata,
-    /// Is the version number, see [Metadata::file_id]
+    /// The file name (not including the extension)
+    pub name: String,
+    /// The ID used to identify the file, see [Metadata::file_id]
     pub file_id: String,
     /// A list containing all the [Titles](Title)
     /// 
@@ -35,7 +37,7 @@ pub struct Notebook {
     pub links: Vec<Link>,
     /// A list containing all the [Pages](Page)
     /// 
-    /// Pages are sortedß
+    /// Pages are sorted
     pub pages: Vec<Page>,
     /// Map between PAGE_ID and page indexes.
     pub page_id_map: HashMap<String, usize>,
@@ -91,6 +93,7 @@ pub enum LinkType {
 
 #[derive(Debug, Clone, Copy, Serialize, Default, Hash, std::cmp::PartialEq, std::cmp::Eq, std::cmp::PartialOrd, std::cmp::Ord)]
 pub enum TitleLevel {
+    FileLevel,
     #[default]
     BlackBack,
     LightGray,
@@ -108,6 +111,44 @@ fn process_rect_to_corners(rect: Vec<i32>) -> [i32; 4] {
     }
 }
 
+
+/// Decode the content and then get a blurred grayscale image (1 byte per pixel).
+fn get_blurred_image(content: &[u8], width: usize, height: usize) -> Vec<u8> {
+    blur_image(
+        &decode_separate(content, width * height).unwrap().as_black_white(),
+        width, height
+    )
+}
+
+/// Will blur the given grayscale image (1 byte per pixel)
+fn blur_image(img: &[u8], w: usize, h: usize) -> Vec<u8> {
+    const R: usize = 3;
+    let mut blurred = Vec::from(img);
+    let get_i = move |x: usize, y: usize| x + y * w;
+
+    for idx in 0..(w*h) {
+        let x_c = idx % w;
+        let y_c = idx / w;
+        //Only blur pixel if not black
+        if img[get_i(x_c, y_c)] > 100 {
+            let min_x = x_c.saturating_sub(R);
+            let max_x = (x_c + R + 1).min(w);
+            let min_y = y_c.saturating_sub(R);
+            let max_y = (y_c + R + 1).min(h);
+
+            let points: Vec<_> = (min_x..max_x)
+                .flat_map(|x| (min_y..max_y)
+                    .map(move |y| get_i(x, y))
+                ).collect();
+            let weight = points.len() as f32;
+            let av = points.into_iter().map(|i| img[i] as f32).sum::<f32>() / weight;
+            blurred[get_i(x_c, y_c)] = av as u8;
+        };
+    }
+
+    blurred
+}
+
 // ###########################################################################################################
 // ###########################################################################################################
 // ###########################################################################################################
@@ -117,9 +158,40 @@ fn process_rect_to_corners(rect: Vec<i32>) -> [i32; 4] {
 // ###########################################################################################################
 
 impl Notebook {
-    pub fn update_title(&mut self, title_idx: usize, new_title: &str) {
+    /// Update the title's name field given the index it had.
+    pub fn update_title_at_idx(&mut self, title_idx: usize, new_title: &str) {
         if let Some(title) = self.titles.get_mut(title_idx) {
             title.name = new_title.to_string();
+        }
+    }
+
+    /// Gets the page_id corresponding to the page at `index`
+    /// 
+    /// # Return
+    /// * `Some(String)` with the [id](Page::page_id)
+    /// * `None` if the index is out of bounds.
+    pub fn get_page_id(&self, index: usize) -> Option<String> {
+        self.pages.get(index).map(|page| page.page_id.clone())
+    }
+
+    /// Gets the page's index (if it exists).
+    pub fn get_page_index(&self, id: &str) -> Option<usize> {
+        self.page_id_map.get(id).copied()
+    }
+
+    /// Will update the title's [name](Self::name) given the
+    /// `page_id` and the title's coordinates on the page.
+    pub fn update_title_by_page(&mut self, page_id: &str, title_coords: [i32; 4], new_name: &str) {
+        if let Some(idx) = self.get_page_index(page_id) {
+            // Go over titles
+            for title in self.titles.iter_mut() {
+                // If same page & locaiton, assume it's the one
+                // and exit.
+                if title.page_index == idx && title.coords == title_coords {
+                    title.name = new_name.to_string();
+                    break;
+                }
+            }
         }
     }
 }
@@ -196,41 +268,6 @@ impl Title {
             name: title,
         })
     }
-}
-
-fn get_blurred_image(content: &[u8], width: usize, height: usize) -> Vec<u8> {
-    blur_image(
-        &decode_separate(content, width * height).unwrap().as_black_white(),
-        width, height
-    )
-}
-
-fn blur_image(img: &[u8], w: usize, h: usize) -> Vec<u8> {
-    const R: usize = 3;
-    let mut blurred = Vec::from(img);
-    let get_i = move |x: usize, y: usize| x + y * w;
-
-    for idx in 0..(w*h) {
-        let x_c = idx % w;
-        let y_c = idx / w;
-        //Only blur pixel if not black
-        if img[get_i(x_c, y_c)] > 100 {
-            let min_x = x_c.saturating_sub(R);
-            let max_x = (x_c + R + 1).min(w);
-            let min_y = y_c.saturating_sub(R);
-            let max_y = (y_c + R + 1).min(h);
-
-            let points: Vec<_> = (min_x..max_x)
-                .flat_map(|x| (min_y..max_y)
-                    .map(move |y| get_i(x, y))
-                ).collect();
-            let weight = points.len() as f32;
-            let av = points.into_iter().map(|i| img[i] as f32).sum::<f32>() / weight;
-            blurred[get_i(x_c, y_c)] = av as u8;
-        };
-    }
-
-    blurred
 }
 
 impl Link {
@@ -381,6 +418,7 @@ impl std::fmt::Display for TitleLevel {
             f,
             "{}",
             match self {
+                TitleLevel::FileLevel => "File",
                 TitleLevel::BlackBack => "BlackBack",
                 TitleLevel::LightGray => "LightGray",
                 TitleLevel::DarkGray => "DarkGray",
@@ -393,6 +431,7 @@ impl std::fmt::Display for TitleLevel {
 impl From<TitleLevel> for i32 {
     fn from(value: TitleLevel) -> Self {
         match value {
+            TitleLevel::FileLevel => 0,
             TitleLevel::BlackBack => 1,
             TitleLevel::LightGray => 2,
             TitleLevel::DarkGray => 3,

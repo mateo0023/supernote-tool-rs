@@ -18,7 +18,9 @@ fn main() {
     let notebook = io::load("./test/Test Doc.note").unwrap();
 
     let _ = eframe::run_native("SuperNote Exporter", eframe::NativeOptions::default(), Box::new(|ctx| {
-        let app = ui::MyApp::new(notebook, &ctx.egui_ctx);
-        Ok(Box::new(app))
+        match ui::MyApp::new(notebook, &ctx.egui_ctx) {
+            Ok(app) => Ok(Box::new(app)),
+            Err(e) => todo!("{e}"),
+        }
     }));
 }
