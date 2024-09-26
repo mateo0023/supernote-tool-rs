@@ -41,15 +41,33 @@ pub struct Notebook {
     pub pages: Vec<Page>,
     /// Map between PAGE_ID and page indexes.
     pub page_id_map: HashMap<String, usize>,
+    /// The notebook's starting page.
+    /// 
+    /// Used when chaining multiple [Notebook]s
+    /// into a single PDF.
+    pub starting_page: usize,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Default)]
 pub struct Title {
     pub metadata: metadata::MetaMap,
+    /// The decoded content of the Title.
+    /// 
+    /// To be decoded into a Bitmap
     pub content: Vec<u8>,
+    /// Essentially the type of title
+    /// 
+    /// [TitleLevel] will later be used to determine
+    /// how to order the ToC in the PDF.
+    /// Smaller titles closer to root.
     pub title_level: TitleLevel,
+    /// The page_index in the `.note` file.
+    /// Needs to be shifted when exporting
     pub page_index: usize,
+    /// The vertical position on the page.
+    /// Same as [`coords[1]`](Self::coords)
     pub position: u32,
+    /// The 
     pub coords: [i32; 4],
     pub width: usize,
     pub height: usize,
@@ -165,17 +183,48 @@ impl Notebook {
         }
     }
 
-    /// Gets the page_id corresponding to the page at `index`
+    /// Gets the page_id corresponding to the page at internal `index`
+    /// 
+    /// *NOT SHIFTED* by [starting_page](Self::starting_page)
     /// 
     /// # Return
     /// * `Some(String)` with the [id](Page::page_id)
     /// * `None` if the index is out of bounds.
-    pub fn get_page_id(&self, index: usize) -> Option<String> {
+    pub fn get_page_id_from_internal(&self, index: usize) -> Option<String> {
         self.pages.get(index).map(|page| page.page_id.clone())
+    }
+
+    /// Will get the PDF page number given the `page_id` and the internal
+    /// [starting_page](Self::starting_page).
+    pub fn get_page_index_from_id(&self, page_id: &str) -> Option<usize> {
+        self.page_id_map.get(page_id).copied().map(|idx| idx + self.starting_page)
     }
 }
 
 impl Title {
+    pub fn new_for_file(name: &str, index: usize) -> Self {
+        Title {
+            title_level: TitleLevel::FileLevel,
+            page_index: index,
+            name: name.to_string(),
+            ..Default::default()
+        }
+    }
+
+    /// Used to exporting into a ToC. Will create a
+    /// [Title] with default values for all except:
+    /// * [name](Self::name), will be the same (clone)
+    /// * [page_index](Self::page_index), which will be shifted by `shift`
+    /// * [title_level](Self::title_level), will be the same (copy)
+    pub fn basic_for_toc(&self, shift: usize) -> Self {
+        Title {
+            name: self.name.clone(),
+            page_index: self.page_index + shift,
+            title_level: self.title_level,
+            ..Default::default()
+        }
+    }
+
     /// It loops over the titles in [Metadata::footer::titles](metadata::Footer::titles) and maps it to a [Title] by calling [Title::from_meta].
     /// 
     /// # Returns

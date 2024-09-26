@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::Path;
+use std::error::Error;
 
 use crate::data_structures::*;
 use crate::decoder::{decode_separate, ColorMap, DecodedImage};
@@ -12,6 +12,85 @@ mod potrace;
 
 use lopdf::content::Content;
 use lopdf::{dictionary, Document, Object, ObjectId, Stream};
+
+/// Exports the array of [Notebook] into a single [PDF document](Document).
+pub fn export_multiple(notebooks: &[&Notebook], colormap: &ColorMap) -> Result<Document, Box<dyn Error>> {
+    let mut doc = Document::with_version("1.7");
+    let base_page_id = doc.new_object_id();
+
+    let file_map = {
+        let mut map = HashMap::new();
+        notebooks.iter().for_each(|n| {map.insert(n.file_id.clone(), n);});
+        map
+    };
+
+    // Creating document catalog.
+    // There are many more entries allowed in the catalog dictionary.
+    let catalog_id = doc.add_object(dictionary! {
+        "Type" => "Catalog",
+        "Pages" => base_page_id,
+    });
+
+    let mut pages = vec![];
+    for notebook in notebooks.iter() {
+        pages.extend_from_slice(&add_pages(base_page_id, &mut doc, notebook, colormap)?);
+    }
+
+    for notebook in notebooks.iter() {
+        for link in &notebook.links {
+            match &link.link_type {
+                LinkType::SameFile { page_id } => {
+                    let to_idx = notebook.get_page_index_from_id(page_id).unwrap();
+                    add_internal_link(
+                        &mut doc, pages[link.start_page + notebook.starting_page],
+                        link.coords, pages[to_idx]
+                    )?;
+                },
+                // Link goes to into_note
+                LinkType::OtherFile { page_id, file_id  } => if let Some(&into_note) = file_map.get(file_id) {
+                    let to_idx = into_note.get_page_index_from_id(page_id).unwrap();
+                    add_internal_link(
+                        &mut doc, pages[link.start_page + notebook.starting_page],
+                        link.coords, pages[to_idx]
+                    )?;
+                },
+                LinkType::WebLink { link } => todo!("Haven't implemented linking to {}", link),
+            }
+        }
+    }
+
+    let mut titles = vec![];
+    for notebook in notebooks.iter() {
+        titles.push(Title::new_for_file(&notebook.file_name, notebook.starting_page));
+        titles.extend(notebook.titles.iter().map(|t| t.basic_for_toc(notebook.starting_page)));
+    }
+    // Add the table of contents to the document
+    add_toc(&mut doc, &titles, &pages, catalog_id).map_err(|e| e.to_string())?;
+
+    let page_count = pages.len();
+
+    // Add the pages object to the document
+    doc.objects.insert(base_page_id, Object::Dictionary(dictionary!{
+        // Type of dictionary
+        "Type" => "Pages",
+        // Vector of page IDs in document. Normally would contain more than one ID
+        // and be produced using a loop of some kind.
+        "Kids" => pages.into_iter().map(|p| p.into()).collect::<Vec<_>>(),
+        // Page count
+        "Count" => page_count as i64,
+        // A rectangle that defines the boundaries of the physical or digital media.
+        // This is the "page size".
+        "MediaBox" => vec![0.into(), 0.into(), A4_WIDTH.into(), A4_HEIGHT.into()]
+    }));
+
+    // The "Root" key in trailer is set to the ID of the document catalog,
+    // the remainder of the trailer is set during `doc.save()`.
+    doc.trailer.set("Root", catalog_id);
+
+    // pdf.compress();
+
+    Ok(doc)
+}
 
 fn to_pdf(notebook: &Notebook, colormap: &ColorMap) -> Result<Document, String> {
     let mut doc = Document::with_version("1.7");
@@ -209,7 +288,7 @@ fn add_pages(pages_id: ObjectId, doc: &mut Document, notebook: &Notebook, colorm
 /// Function to add an internal link annotation to a page
 fn add_internal_link(
     doc: &mut Document,
-    page_id: ObjectId,
+    from_page_id: ObjectId,
     rect: [i32; 4],
     destination_page_id: ObjectId,
 ) -> Result<(), String> {
@@ -242,7 +321,7 @@ fn add_internal_link(
     let annotation_id = doc.add_object(annotation);
 
     // Add the annotation to the page's /Annots array
-    if let Some(Object::Dictionary(ref mut page_dict)) = doc.objects.get_mut(&page_id) {
+    if let Some(Object::Dictionary(ref mut page_dict)) = doc.objects.get_mut(&from_page_id) {
         // Retrieve or create the /Annots array
         let annots = page_dict.as_hashmap_mut().entry("Annots".into()).or_insert_with(|| Object::Array(vec![]));
 
@@ -279,12 +358,6 @@ fn page_to_commands(page: &Page, colormap: &ColorMap) -> Result<Content, String>
 impl Notebook {
     pub fn to_pdf(&self, colormap: &ColorMap) -> Result<Document, String> {
         to_pdf(self, colormap)
-    }
-
-    pub fn to_pdf_file(&self, colormap: &ColorMap, path: &Path) -> Result<std::fs::File, String> {
-        let mut doc = self.to_pdf(colormap)?;
-        let new_path = path.join(format!("{}.pdf", self.file_name));
-        doc.save(new_path).map_err(|e| e.to_string())
     }
 }
 

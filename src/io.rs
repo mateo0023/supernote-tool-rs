@@ -1,8 +1,10 @@
 //! Loads the data and metadata
 
 use std::collections::HashMap;
+use std::error::Error;
 use std::fs::File;
 use std::io::{self, prelude::*, SeekFrom};
+use std::path::Path;
 
 use byteorder::{LittleEndian, ReadBytesExt};
 use regex::Regex;
@@ -268,6 +270,13 @@ pub fn extract_key_and_read(file: &mut File, meta: &MetaMap, key: &str) -> Optio
     meta.get(key).and_then(|str_v| str_v[0].parse::<u64>().ok()).and_then(|addr| get_content_at_address(file, addr).ok())
 }
 
+/// Saves the file to `path/name.pdf`.
+pub fn to_file(mut doc: lopdf::Document, path: &Path, name: &str) -> Result<File, Box<dyn Error>> {
+    let new_path = path.join(format!("{}.pdf", name));
+    let f = doc.save(new_path)?;
+    Ok(f)
+}
+
 // #######################################################################
 // #######################################################################
 // ########################### IMPLEMENTATIONS ###########################
@@ -368,6 +377,7 @@ impl Notebook {
             pages,
             page_id_map,
             file_name: name,
+            starting_page: 0,
         })
     }
 }

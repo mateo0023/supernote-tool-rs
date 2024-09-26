@@ -9,16 +9,18 @@ use rfd::FileDialog;
 use crate::data_structures::{Notebook, Title, TitleLevel};
 use crate::decoder::ColorMap;
 use crate::error::*;
+use crate::exporter::export_multiple;
+use crate::io::to_file;
 
 const SETTINGS_PATH: &str = "./test/config.json";
 
 pub struct MyApp {
     app_cache: AppCache,
-    notebooks: Vec<Notebook>,
-    titles: Vec<TitleHolder>,
+    notebooks: Vec<(Notebook, TitleHolder)>,
     colormap: ColorMap,
     out_folder: Option<PathBuf>,
     out_err: Option<String>,
+    out_name: String,
 }
 
 #[derive(Default)]
@@ -73,21 +75,26 @@ impl MyApp {
     pub fn new() -> Self {
         MyApp {
             notebooks: vec![],
-            titles: vec![],
             colormap: ColorMap::default(),
             out_folder: None,
             out_err: None,
             app_cache: AppCache::load_or_default(),
+            out_name: String::new(),
         }
     }
 
     pub fn add_notebook(&mut self, mut notebook: Notebook, ctx: &egui::Context) -> Result<(), Box<dyn Error>> {
-        println!("Adding Notebook");
         self.app_cache.load_or_add(&mut notebook)?;
         let new_titles = TitleHolder::from_notebook(&notebook, ctx);
         
-        self.notebooks.push(notebook);
-        self.titles.push(new_titles);
+        self.notebooks.push((notebook, new_titles));
+        self.notebooks.sort_by_cached_key(|n| n.0.file_name.clone());
+
+        let mut page = 0;
+        for (n, _) in self.notebooks.iter_mut() {
+            n.starting_page = page;
+            page += n.pages.len();
+        }
 
         Ok(())
     }
@@ -98,33 +105,36 @@ impl MyApp {
         self.update_cache();
         self.app_cache.save()?;
 
-        for (idx, holder) in self.titles.iter().enumerate() {
+        for (notebook, holder) in self.notebooks.iter_mut() {
             for title in holder.titles.iter() {
                 let (id, name) = title.get_data();
                 if let Some(id) = id {
-                    self.notebooks[idx].update_title_at_idx(id, name);
+                    notebook.update_title_at_idx(id, name);
                 }
             }
         }
 
         if self.notebooks.len() < 2 || !self.app_cache.combine_pdfs {
-            for note in &self.notebooks {
+            for (note, _) in &self.notebooks {
                 if let Some(path) = &self.out_folder {
-                    if let Err(e) = note.to_pdf_file(&self.colormap, path) {
+                    if let Err(e) = to_file(note.to_pdf(&self.colormap)?, path, &note.file_name) {
                         self.out_err.get_or_insert("".to_string())
                             .push_str(format!("\n{}", e).as_str());
                     }
                 }
             }
-        } else {
-            todo!("Implement combining PDFs");
+        } else if let Some(path) = &self.out_folder {
+            if let Err(e) = to_file(export_multiple(&self.notebooks.iter().map(|(n, _)| n).collect::<Vec<_>>(), &self.colormap)?, path, &self.out_name) {
+                self.out_err.get_or_insert("".to_string())
+                    .push_str(format!("\n{}", e).as_str());
+            }
         }
         
         Ok(())
     }
 
     fn update_cache(&mut self) {
-        for holder in &self.titles {
+        for (_, holder) in &self.notebooks {
             let (k, v) = holder.as_list();
             self.app_cache.update(k, v);
         }
@@ -160,10 +170,20 @@ impl eframe::App for MyApp {
                         self.out_folder = FileDialog::new().pick_folder();
                     },
                 }
+
+
+                if !self.notebooks.is_empty() && ui.button("Close Notebooks").clicked() {
+                    self.notebooks.clear();
+                }
             });
 
             if self.notebooks.len() > 1 {
-                ui.checkbox(&mut self.app_cache.combine_pdfs, "Combine Notebooks?");
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut self.app_cache.combine_pdfs, "Combine Notebooks?");
+                    if self.app_cache.combine_pdfs {
+                        ui.text_edit_singleline(&mut self.out_name);
+                    }
+                });
             }
 
             if let Some(e) = &self.out_err {
@@ -171,7 +191,7 @@ impl eframe::App for MyApp {
             }
 
             let mut title_bx = vec![];
-            for holder in self.titles.iter_mut() {
+            for (_, holder) in self.notebooks.iter_mut() {
                 ui.collapsing(holder.file_name.clone(), |ui| {
                     for title in holder.titles.iter_mut() {
                         title_bx.extend(title.show(ui));
@@ -215,7 +235,7 @@ impl TitleHolder {
         };
         notebook.titles.iter().enumerate()
             .filter_map(|(idx, title)| {
-                let page_id = notebook.get_page_id(title.page_index)?;
+                let page_id = notebook.get_page_id_from_internal(title.page_index)?;
                 TitleEditor::new(title, idx, &page_id, ctx)
             }.map(|te| (te, title.title_level)).ok()
             )
@@ -394,7 +414,7 @@ impl TitleCache {
     }
 
     pub fn new(title: &Title, notebook: &Notebook) -> Result<Self, Box<dyn Error>> {
-        let page_id = match notebook.get_page_id(title.page_index) {
+        let page_id = match notebook.get_page_id_from_internal(title.page_index) {
             Some(id) => id,
             None => todo!("Create processing error"),
         };
