@@ -10,6 +10,8 @@ const A4_HEIGHT: i32 = crate::common::f_fmt::PAGE_HEIGHT as i32;
 
 mod potrace;
 
+pub use potrace::PotraceError;
+
 use lopdf::content::Content;
 use lopdf::{dictionary, Document, Object, ObjectId, Stream};
 
@@ -92,7 +94,7 @@ pub fn export_multiple(notebooks: &[&Notebook], colormap: &ColorMap) -> Result<D
     Ok(doc)
 }
 
-fn to_pdf(notebook: &Notebook, colormap: &ColorMap) -> Result<Document, String> {
+fn to_pdf(notebook: &Notebook, colormap: &ColorMap) -> Result<Document, Box<dyn Error>> {
     let mut doc = Document::with_version("1.7");
     let base_page_id = doc.new_object_id();
 
@@ -121,7 +123,7 @@ fn to_pdf(notebook: &Notebook, colormap: &ColorMap) -> Result<Document, String> 
     }
 
     // Add the table of contents to the document
-    add_toc(&mut doc, &notebook.titles, &pages, catalog_id).map_err(|e| e.to_string())?;
+    add_toc(&mut doc, &notebook.titles, &pages, catalog_id)?;
 
     let page_count = pages.len();
 
@@ -148,6 +150,13 @@ fn to_pdf(notebook: &Notebook, colormap: &ColorMap) -> Result<Document, String> 
     Ok(doc)
 }
 
+/// Create a table of contents given the list of [titles](Title) and [page_ids](ObjectId).
+/// 
+/// Each title only needs to contain:
+/// * [Level](Title::title_level)
+/// * [Name](Title::name)
+/// * Updated [Page Index](Title::page_index) to search `page_ids`.
+/// * All other fields will be ignored and can be `..Default::default()`
 fn add_toc(doc: &mut Document, titles: &[Title], page_ids: &[ObjectId], catalog_id: ObjectId) -> Result<(), lopdf::Error>{
     let mut catalog = doc.get_object(catalog_id)?.as_dict()?.clone();
     let mut prev_at_level: HashMap<TitleLevel, ObjectId> = HashMap::new();
@@ -257,7 +266,7 @@ fn add_toc(doc: &mut Document, titles: &[Title], page_ids: &[ObjectId], catalog_
     Ok(())
 }
 
-fn add_pages(pages_id: ObjectId, doc: &mut Document, notebook: &Notebook, colormap: &ColorMap) -> Result<Vec<ObjectId>, String> {
+fn add_pages(pages_id: ObjectId, doc: &mut Document, notebook: &Notebook, colormap: &ColorMap) -> Result<Vec<ObjectId>, Box<dyn Error>> {
     let mut page_commands = vec![];
     for page in &notebook.pages {
         page_commands.push(page_to_commands(page, colormap)?);
@@ -265,10 +274,7 @@ fn add_pages(pages_id: ObjectId, doc: &mut Document, notebook: &Notebook, colorm
 
     let mut pages: Vec<ObjectId> = Vec::with_capacity(page_commands.len());
     for content in page_commands {
-        let encoded = match content.encode() {
-            Ok(e) => e,
-            Err(err) => return Err(err.to_string()),
-        };
+        let encoded = content.encode()?;
 
         let content_id = doc.add_object(Stream::new(dictionary! {}, encoded));
 
@@ -291,7 +297,7 @@ fn add_internal_link(
     from_page_id: ObjectId,
     rect: [i32; 4],
     destination_page_id: ObjectId,
-) -> Result<(), String> {
+) -> Result<(), Box<dyn Error>> {
     // Define the GoTo action
     let action = dictionary! {
         "Type" => "Action",
@@ -339,13 +345,13 @@ fn add_internal_link(
 }
 
 /// Exports a given page to the PDF Vector Commands
-fn page_to_commands(page: &Page, colormap: &ColorMap) -> Result<Content, String> {
+fn page_to_commands(page: &Page, colormap: &ColorMap) -> Result<Content, Box<dyn Error>> {
     let mut image = DecodedImage::default();
     for data in page.layers.iter()
         .filter(|l| !l.is_background())
         .filter_map(|l| l.content.as_ref())
     {
-        image += decode_separate(data, DecodedImage::DEFAULT_CAPACITY).map_err(|e| e.to_string())?;
+        image += decode_separate(data, DecodedImage::DEFAULT_CAPACITY)?;
     }
 
     potrace::trace_and_generate(image, colormap).map(|operations| {
@@ -356,7 +362,7 @@ fn page_to_commands(page: &Page, colormap: &ColorMap) -> Result<Content, String>
 }
 
 impl Notebook {
-    pub fn to_pdf(&self, colormap: &ColorMap) -> Result<Document, String> {
+    pub fn to_pdf(&self, colormap: &ColorMap) -> Result<Document, Box<dyn Error>> {
         to_pdf(self, colormap)
     }
 }

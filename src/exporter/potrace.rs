@@ -1,9 +1,43 @@
 pub mod bindings;
 mod wrapper;
 
+use std::error::Error;
+
 use crate::decoder::{DecodedImage, ColorList, ColorMap};
 
 use crate::common::*;
+
+#[derive(Debug)]
+pub enum PotraceError {
+    TraceError(i32),
+    PotraceParams,
+    MemAlloc,
+    Bounds{
+        word_idx: usize,
+        map_len: usize,
+    }
+}
+
+impl Error for PotraceError{}
+
+impl std::fmt::Display for PotraceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PotraceError::TraceError(e) => write!(
+                f,
+                "Found error {} while tracing",
+                e
+            ),
+            PotraceError::PotraceParams => write!(f, "Unable to create potrace parameters"),
+            PotraceError::MemAlloc => write!(f, "Unable to allocate enough memory to trace"),
+            PotraceError::Bounds { word_idx, map_len } => write!(
+                f,
+                "word_idx {} out of bounds (len {})",
+                word_idx, map_len
+            ),
+        }
+    }
+}
 
 use lopdf::content::Operation;
 use wrapper::{Bitmap, PotraceParams, PotraceState, trace, generate_combined_paths};
@@ -19,7 +53,7 @@ struct MultiColorBitmap {
     black_color: PdfColor,
 }
 
-pub fn trace_and_generate(image: DecodedImage, color_map: &ColorMap) -> Result<Vec<Operation>, String> {
+pub fn trace_and_generate(image: DecodedImage, color_map: &ColorMap) -> Result<Vec<Operation>, Box<dyn Error>> {
     let params = PotraceParams::new()?;
 
     let mut bitmamps: MultiColorBitmap = image.try_into()?;
@@ -39,7 +73,7 @@ impl MultiColorBitmap {
         self.black_color = color_map.get_f_rgb(Black);
     }
 
-    pub fn trace(self, params: &PotraceParams) -> Result<Vec<(PotraceState, PdfColor)>, String> {
+    pub fn trace(self, params: &PotraceParams) -> Result<Vec<(PotraceState, PdfColor)>, Box<dyn Error>> {
         Ok(vec![
             (trace(&self.white_btmp, params)?, self.white_color),
             (trace(&self.l_gray_btmp, params)?, self.l_gray_color),
@@ -50,7 +84,7 @@ impl MultiColorBitmap {
 }
 
 impl TryFrom<DecodedImage> for MultiColorBitmap {
-    type Error = String;
+    type Error = Box<dyn Error>;
     
     /// Will map from [DecodedImage] to [MultiColorBitmap] 
     /// using the default [ColorMap]

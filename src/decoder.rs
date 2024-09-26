@@ -13,13 +13,20 @@ mod color;
 
 pub use color::{ColorMap, ColorList};
 
+/// Stores the decoded information from the page or content
 #[derive(Debug)]
 pub struct DecodedImage {
+    /// The amount of pixels pushed
     idx: usize,
+    /// The amount of pixels expected
     capacity: usize,
+    /// Array of wether pixel at bit is that color
     pub white: Vec<bool>,
+    /// Array of wether pixel at bit is that color
     pub l_gray: Vec<bool>,
+    /// Array of wether pixel at bit is that color
     pub d_gray: Vec<bool>,
+    /// Array of wether pixel at bit is that color
     pub black: Vec<bool>,
 }
 
@@ -146,6 +153,7 @@ impl DecodedImage {
         }
     }
 
+    /// Add the given `colorcode` for the specified `length`.
     pub fn push(&mut self, colorcode: u8, length: usize) -> Result<(), DecoderError>{
         use color::ColorList::*;
         match color::ColorList::decode(colorcode)? {

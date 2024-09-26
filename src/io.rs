@@ -80,7 +80,7 @@ const LAYER_KEYS: [&str; 5] = ["MAINLAYER", "LAYER1", "LAYER2", "LAYER3", "BGLAY
 
 
 /// Loads
-pub fn load(path: std::path::PathBuf) -> io::Result<Notebook> {
+pub fn load(path: std::path::PathBuf) -> Result<Notebook, Box<dyn Error>> {
     let name = path.file_stem().unwrap().to_str().unwrap();
     let mut file = File::open(path.clone())?;
 
@@ -355,7 +355,7 @@ impl metadata::Metadata {
 impl Notebook {
     /// Create a [Notebook] given an open `.note` file and 
     /// a [file names](String)
-    pub fn from_file(file: &mut File, name: String) -> io::Result<Self> {
+    pub fn from_file(file: &mut File, name: String) -> Result<Self, Box<dyn Error>> {
         let metadata = Metadata::from_file(file)?;
         let file_id = metadata.file_id.clone();
         let mut titles = Title::get_vec_from_meta(&metadata, file)?;

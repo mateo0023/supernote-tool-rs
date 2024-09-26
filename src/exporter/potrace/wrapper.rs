@@ -1,9 +1,10 @@
 use lopdf::content::Operation;
 
-use super::{bindings::*, PdfColor};
+use std::error::Error;
 use std::mem;
 use std::os::raw::c_ulong;
 
+use super::{bindings::*, PdfColor, PotraceError};
 use crate::data_structures::file_format_consts as f_fmt;
 
 const PAGE_WIDTH: i32 = f_fmt::PAGE_WIDTH as i32;
@@ -15,7 +16,7 @@ pub struct Bitmap {
 
 impl Bitmap {
     /// Create a new bitmap with the given width and height.
-    pub fn new() -> Result<Self, String> {
+    pub fn new() -> Result<Self, Box<dyn Error>> {
         unsafe {
             // Calculate dy: words per scanline
             let bits_per_word = mem::size_of::<c_ulong>() * 8;
@@ -25,7 +26,7 @@ impl Bitmap {
             let size = (dy * PAGE_HEIGHT).unsigned_abs() as usize;
             let map = libc::calloc(size, mem::size_of::<c_ulong>()) as *mut c_ulong;
             if map.is_null() {
-                return Err("Was not able to allocate memory for Bitmap (potrace binding)".to_string());
+                return Err(Box::new(PotraceError::MemAlloc));
             }
 
             // Initialize the bitmap struct
@@ -40,7 +41,7 @@ impl Bitmap {
         }
     }
 
-    pub fn from_vec(data: &[bool]) -> Result<Self, String> {
+    pub fn from_vec(data: &[bool]) -> Result<Self, Box<dyn Error>> {
         // Create a new bitmap
         let mut bitmap = Self::new()?;
 
@@ -69,7 +70,7 @@ impl Bitmap {
     /// # Safety
     ///
     /// This method uses unsafe code to manipulate raw pointers and must be used with care.
-    fn set_pixels_from_vec(&mut self, data: &[bool]) -> Result<(), String> {
+    fn set_pixels_from_vec(&mut self, data: &[bool]) -> Result<(), Box<dyn Error>> {
         use std::slice;
 
         unsafe {
@@ -113,10 +114,7 @@ impl Bitmap {
 
                     // Boundary check: Ensure `word_idx` is within the bounds of `map_slice`.
                     if word_idx >= map_slice.len() {
-                        return Err(format!(
-                            "word_idx {} out of bounds (len {}), x={}, y={}, dy_words={}, width={}, height={}",
-                            word_idx, map_slice.len(), x, y, dy_words, width, height
-                        ));
+                        return Err(Box::new(PotraceError::Bounds { word_idx, map_len: map_slice.len() }));
                     }
 
                     // Create a bitmask for the current pixel.
@@ -166,11 +164,11 @@ pub struct PotraceParams {
 }
 
 impl PotraceParams {
-    pub fn new() -> Result<Self, String> {
+    pub fn new() -> Result<Self, Box<dyn Error>> {
         unsafe {
             let ptr = potrace_param_default();
             if ptr.is_null() {
-                Err("Unable to create potrace parameters".to_string())
+                Err(Box::new(PotraceError::PotraceParams))
             } else {
                 Ok(Self { params: ptr })
             }
@@ -189,11 +187,11 @@ impl Drop for PotraceParams {
 }
 
 /// Generate a trace of the given bitmap.
-pub fn trace(bitmap: &Bitmap, params: &PotraceParams) -> Result<PotraceState, String> {
+pub fn trace(bitmap: &Bitmap, params: &PotraceParams) -> Result<PotraceState, Box<dyn Error>> {
     unsafe {
         let state = potrace_trace(params.params, &bitmap.bitmap);
         if state.is_null() || (*state).status != POTRACE_STATUS_OK as i32 {
-            Err(format!("Unable to trace the bitmap. State: {}", (*state).status))
+            Err(Box::new(PotraceError::TraceError((*state).status)))
         } else {
             Ok(PotraceState { state })
         }

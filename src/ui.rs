@@ -19,7 +19,7 @@ pub struct MyApp {
     notebooks: Vec<(Notebook, TitleHolder)>,
     colormap: ColorMap,
     out_folder: Option<PathBuf>,
-    out_err: Option<String>,
+    out_err: Option<Vec<Box<dyn Error>>>,
     out_name: String,
 }
 
@@ -83,6 +83,10 @@ impl MyApp {
         }
     }
 
+    fn add_err(&mut self, e: Box<dyn Error>) {
+        self.out_err.get_or_insert(vec![]).push(e);
+    }
+
     pub fn add_notebook(&mut self, mut notebook: Notebook, ctx: &egui::Context) -> Result<(), Box<dyn Error>> {
         self.app_cache.load_or_add(&mut notebook)?;
         let new_titles = TitleHolder::from_notebook(&notebook, ctx);
@@ -118,15 +122,15 @@ impl MyApp {
             for (note, _) in &self.notebooks {
                 if let Some(path) = &self.out_folder {
                     if let Err(e) = to_file(note.to_pdf(&self.colormap)?, path, &note.file_name) {
-                        self.out_err.get_or_insert("".to_string())
-                            .push_str(format!("\n{}", e).as_str());
+                        self.out_err.get_or_insert(vec![])
+                            .push(e);
                     }
                 }
             }
         } else if let Some(path) = &self.out_folder {
             if let Err(e) = to_file(export_multiple(&self.notebooks.iter().map(|(n, _)| n).collect::<Vec<_>>(), &self.colormap)?, path, &self.out_name) {
-                self.out_err.get_or_insert("".to_string())
-                    .push_str(format!("\n{}", e).as_str());
+                self.out_err.get_or_insert(vec![])
+                    .push(e);
             }
         }
         
@@ -150,9 +154,9 @@ impl eframe::App for MyApp {
                         for file_p in path_list {
                             match crate::io::load(file_p) {
                                 Ok(note) => if let Err(e) = self.add_notebook(note, ctx) {
-                                    todo!("Unable to add notebook {}", e);
+                                    self.add_err(e);
                                 },
-                                Err(e) => todo!("Unable to load with e {}", e),
+                                Err(e) => self.add_err(e),
                             }
                         }
                     }
@@ -162,7 +166,7 @@ impl eframe::App for MyApp {
                     true => {
                         if !self.notebooks.is_empty() && ui.button("Export to PDF").clicked() {
                             if let Err(e) = self.package_and_export() {
-                                self.out_err = Some(format!("{e}"));
+                                self.add_err(e);
                             }
                         }
                     },
@@ -186,8 +190,15 @@ impl eframe::App for MyApp {
                 });
             }
 
+            if self.out_err.is_some() && ui.button("Clear Errors").clicked() {
+                self.out_err = None;
+            }
             if let Some(e) = &self.out_err {
-                ui.label(format!("Failed to save. Error: {}", e));
+                ui.collapsing("Errors: ", |ui| {
+                    for err in e.iter() {
+                        ui.label(err.to_string());
+                    }
+                });
             }
 
             let mut title_bx = vec![];

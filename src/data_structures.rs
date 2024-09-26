@@ -1,6 +1,6 @@
 use std::collections::HashMap;
+use std::error::Error;
 use std::fs::File;
-use std::io;
 
 use crate::decoder::decode_separate;
 
@@ -15,6 +15,21 @@ pub mod file_format_consts {
 
 use metadata::Metadata;
 use serde::Serialize;
+
+#[derive(Debug)]
+pub enum DataStructureError {
+    MissingField{t: StructType, k: String},
+    RectFailure,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum StructType {
+    Notebook,
+    Title,
+    Link,
+    Page,
+    Layer
+}
 
 /// Will contain all the necessary information from the Notebook
 /// 
@@ -114,23 +129,23 @@ pub enum TitleLevel {
     Stripped,
 }
 
-fn process_rect_to_corners(rect: Vec<i32>) -> [i32; 4] {
+fn process_rect_to_corners(rect: Vec<i32>) -> Result<[i32; 4], Box<dyn Error>> {
     if let [x1, y1, w, h, ..] = rect[..] {
-        [
+        Ok([
             x1, y1, x1 + w, y1 + h
-        ]
+        ])
     } else {
-        todo!("rect did not contain 4 elements {:?}", rect)
+        Err(Box::new(DataStructureError::RectFailure))
     }
 }
 
 
 /// Decode the content and then get a blurred grayscale image (1 byte per pixel).
-fn get_blurred_image(content: &[u8], width: usize, height: usize) -> Vec<u8> {
-    blur_image(
-        &decode_separate(content, width * height).unwrap().as_black_white(),
+fn get_blurred_image(content: &[u8], width: usize, height: usize) -> Result<Vec<u8>, Box<dyn Error>> {
+    Ok(blur_image(
+        &decode_separate(content, width * height)?.as_black_white(),
         width, height
-    )
+    ))
 }
 
 /// Will blur the given grayscale image (1 byte per pixel)
@@ -228,7 +243,7 @@ impl Title {
     /// 
     /// # Panics
     /// It may panic when calling [Title::from_meta]
-    pub fn get_vec_from_meta(metadata: &Metadata, file: &mut File) -> io::Result<Vec<Title>> {
+    pub fn get_vec_from_meta(metadata: &Metadata, file: &mut File) -> Result<Vec<Title>, Box<dyn Error>> {
         match &metadata.footer.titles {
             Some(v) => v.iter().map(|metadata| Title::from_meta(metadata, file)).collect(),
             None => Ok(vec![]),
@@ -257,22 +272,35 @@ impl Title {
     ///     position: u32,
     /// }
     /// ```
-    pub fn from_meta(metadata: &metadata::MetaMap, file: &mut File) -> io::Result<Title> {
+    pub fn from_meta(metadata: &metadata::MetaMap, file: &mut File) -> Result<Title, Box<dyn Error>> {
         // Very long chain with possible errors. But it should be fine as long as the file is properly formatted
-        let page_pos = metadata.get("TITLERECTORI").unwrap().first().unwrap().split(',').nth(1).unwrap().parse().unwrap();
-        // let bitmap_loc: u64 = metadata.get("TITLEBITMAP").unwrap().first().unwrap().parse().unwrap();
-        let page_index = metadata.get("PAGE_NUMBER").unwrap().first().unwrap().parse::<usize>().unwrap() - 1;
+        let page_pos = metadata.get("TITLERECTORI")
+            .ok_or(Box::new(DataStructureError::MissingField { t: StructType::Title, k: "TITLERECTORI".to_string() }))?[0]
+            .split(',').nth(1).unwrap().parse()?;
+        let page_index = metadata.get("PAGE_NUMBER")
+            .ok_or(DataStructureError::MissingField { t: StructType::Title, k: "PAGE_NUMBER".to_string() })?[0]
+            .parse::<usize>()? - 1;
 
-        let coords: Vec<i32> = metadata.get("TITLERECT").unwrap()[0].split(',').map(|v| v.parse().unwrap()).collect();
+        let coords: Vec<i32> = {
+            let mut c = vec![];
+            let it = metadata.get("TITLERECT")
+                .ok_or(DataStructureError::MissingField { t: StructType::Title, k: "TITLERECT".to_string() })?[0]
+                .split(',');
+            for p in it {
+                c.push(p.parse()?);
+            }
+            c
+        };
         let width = coords[2].unsigned_abs() as usize;
         let height = coords[3].unsigned_abs() as usize;
-        let coords = process_rect_to_corners(coords);
+        let coords = process_rect_to_corners(coords)?;
 
         let title_level = TitleLevel::from_meta(metadata);
         
-        let content = extract_key_and_read(file, metadata, "TITLEBITMAP").unwrap();
+        let content = extract_key_and_read(file, metadata, "TITLEBITMAP")
+            .ok_or(DataStructureError::MissingField { t: StructType::Title, k: "TITLEBITMAP".to_string() })?;
         let title = {
-            let img = get_blurred_image(&content, width, height);
+            let img = get_blurred_image(&content, width, height)?;
             match tesseract::ocr_from_frame(&img, width as i32, height as i32, 1, width as i32, "eng") {
                 Ok(t) => t.chars().filter(|c| c.is_ascii() || *c == '\n').collect(),
                 Err(err) => todo!("{}", err),
@@ -296,24 +324,25 @@ impl Link {
     pub fn get_vec_from_meta(metadata: &Metadata) -> Vec<Link> {
         match &metadata.footer.links {
             Some(links) => links.iter().zip(Link::extract_page_numbers_from_meta(metadata).iter())
-                .filter_map(|(link_meta, &page_num)| Link::new(link_meta, page_num, &metadata.file_id)).collect(),
+                .filter_map(|(link_meta, &page_num)| Link::new(link_meta, page_num, &metadata.file_id).unwrap_or_default()).collect(),
             None => vec![],
         }
     }
 
-    fn new(link_meta: &metadata::MetaMap, page_num: usize, file_id: &str) -> Option<Self> {
-        if Link::is_incoming(link_meta) {
-            return None;
+    fn new(link_meta: &metadata::MetaMap, page_num: usize, file_id: &str) -> Result<Option<Self>, Box<dyn Error>> {
+        if Link::is_incoming(link_meta)? {
+            return Ok(None);
         }
-        Some(Link {
+        Ok(Some(Link {
             start_page: page_num,
             link_type: LinkType::from_meta(link_meta, file_id),
-            coords: Self::get_link_rect(link_meta),
-        })
+            coords: Self::get_link_rect(link_meta)?,
+        }))
     }
 
-    fn is_incoming(link_meta: &metadata::MetaMap) -> bool {
-        link_meta.get("LINKINOUT").unwrap()[0] == "1"
+    fn is_incoming(link_meta: &metadata::MetaMap) -> Result<bool, Box<dyn Error>> {
+        Ok(link_meta.get("LINKINOUT")
+            .ok_or(DataStructureError::MissingField { t: StructType::Link, k: "LINKINOUT".to_string() })?[0] == "1")
     }
 
     fn extract_page_numbers_from_meta(metadata: &Metadata) -> Vec<usize> {
@@ -331,10 +360,14 @@ impl Link {
             .collect()
     }
 
-    fn get_link_rect(link_meta: &metadata::MetaMap) -> [i32; 4] {
-        process_rect_to_corners(link_meta.get("LINKRECT").unwrap()[0].split(',')
-            .map(|p| p.parse::<i32>().unwrap())
-            .collect())
+    fn get_link_rect(link_meta: &metadata::MetaMap) -> Result<[i32; 4], Box<dyn Error>> {
+        let mut poitns = vec![];
+        let it = link_meta.get("LINKRECT")
+            .ok_or(DataStructureError::MissingField { t: StructType::Link, k: "LINKRECT".to_string() })?[0].split(',');
+        for p in it {
+            poitns.push(p.parse()?);
+        }
+        process_rect_to_corners(poitns)
     }
 }
 
@@ -448,6 +481,31 @@ impl From<TitleLevel> for i32 {
             TitleLevel::LightGray => 2,
             TitleLevel::DarkGray => 3,
             TitleLevel::Stripped => 4,
+        }
+    }
+}
+
+impl Error for DataStructureError {}
+
+impl std::fmt::Display for DataStructureError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DataStructureError::MissingField { t, k } => write!(f, "{} Missing Field {}", t, k),
+            DataStructureError::RectFailure => write!(f, "The rectangle did not contain 4 values"),
+            
+        }
+    }
+}
+
+impl std::fmt::Display for StructType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use StructType::*;
+        match self {
+            Notebook => write!(f, "Notebook"),
+            Title => write!(f, "Title"),
+            Link => write!(f, "Link"),
+            Page => write!(f, "Page"),
+            Layer => write!(f, "Layer"),
         }
     }
 }

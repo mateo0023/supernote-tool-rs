@@ -10,6 +10,7 @@ mod common {
 
 mod error {
     pub use crate::decoder::DecoderError;
+    pub use crate::exporter::PotraceError;
 }
 
 mod ui;
