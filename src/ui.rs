@@ -147,8 +147,8 @@ impl eframe::App for MyApp {
             ui.horizontal(|ui| {
                 if ui.button("Select File").clicked() {
                     if let Some(path_list) = FileDialog::new().add_filter("Supernote File", &["note"]).pick_files() {
-                        for path in path_list {
-                            match crate::io::load(path) {
+                        for file_p in path_list {
+                            match crate::io::load(file_p) {
                                 Ok(note) => if let Err(e) = self.add_notebook(note, ctx) {
                                     todo!("Unable to add notebook {}", e);
                                 },
@@ -222,7 +222,7 @@ impl Title {
     pub fn render_and_add(&self, ctx: &egui::Context) -> Result<egui::TextureHandle, DecoderError> {
         let bitmap = self.render_bitmap()?;
         let image = egui::ColorImage::from_rgba_unmultiplied([self.width, self.height], &bitmap);
-        Ok(ctx.load_texture(format!("title#{}", self.metadata.get("TITLEBITMAP").unwrap()[0]), image, egui::TextureOptions::default()))
+        Ok(ctx.load_texture(format!("title#{:?}{}", self.coords, self.page_index), image, egui::TextureOptions::default()))
     }
 }
 
@@ -370,9 +370,12 @@ impl AppCache {
         match self.notebooks.get_mut(&notebook.file_id) {
             Some(cache) => {
                 // Already had cache, update title.
-                let mut titles = TitleCache::from_notebook(notebook)?;
-                std::mem::swap(cache, &mut titles);
-                let old_cache = titles;
+                let old_cache = {
+                    let mut on_file_titles = TitleCache::from_notebook(notebook)?;
+                    std::mem::swap(cache, &mut on_file_titles);
+                    on_file_titles
+                    
+                };
                 for c in old_cache {
                     for (i, other) in cache.iter_mut().enumerate() {
                         if other.equals(&c) {

@@ -370,7 +370,6 @@ impl Notebook {
         let page_id_map = HashMap::from_iter(pages.iter().map(|page| (page.page_id.clone(), page.page_num - 1)));
 
         Ok(Notebook {
-            metadata,
             file_id,
             titles,
             links,

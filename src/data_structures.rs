@@ -22,8 +22,6 @@ use serde::Serialize;
 /// * Keyword
 #[derive(Debug, Serialize)]
 pub struct Notebook {
-    /// Is the [Metadata] of the `.note` file
-    pub metadata: Metadata,
     /// The file name (not including the extension)
     pub file_name: String,
     /// The ID used to identify the file, see [Metadata::file_id]
@@ -50,7 +48,6 @@ pub struct Notebook {
 
 #[derive(Debug, Serialize, Default)]
 pub struct Title {
-    pub metadata: metadata::MetaMap,
     /// The decoded content of the Title.
     /// 
     /// To be decoded into a Bitmap
@@ -75,14 +72,12 @@ pub struct Title {
 }
 #[derive(Debug, Serialize)]
 pub struct Link {
-    pub metadata: metadata::MetaMap,
     pub start_page: usize,
     pub link_type: LinkType,
     pub coords: [i32; 4],
 }
 #[derive(Debug, Serialize)]
 pub struct Page {
-    pub metadata: metadata::PageMeta,
     pub totalpath: Option<Vec<u8>>,
     pub recogn_file: Option<Vec<u8>>,
     pub recogn_text: Option<Vec<u8>>,
@@ -93,7 +88,7 @@ pub struct Page {
 
 #[derive(Debug, Serialize)]
 pub struct Layer {
-    pub metadata: metadata::MetaMap,
+    pub is_background: bool,
     pub content: Option<Vec<u8>>,
 }
 
@@ -284,8 +279,7 @@ impl Title {
             }
         };
         
-        Ok(Title { 
-            metadata: metadata.clone(),
+        Ok(Title {
             content,
             page_index,
             position: page_pos,
@@ -312,7 +306,6 @@ impl Link {
             return None;
         }
         Some(Link {
-            metadata: link_meta.clone(),
             start_page: page_num,
             link_type: LinkType::from_meta(link_meta, file_id),
             coords: Self::get_link_rect(link_meta),
@@ -354,7 +347,6 @@ impl Page {
     /// Given a [PageMeta](metadata::PageMeta) it returns a [Page].
     pub fn from_meta(metadata: &metadata::PageMeta, file: &mut File) -> Self {
         Page {
-            metadata: metadata.clone(),
             totalpath: extract_key_and_read(file, &metadata.page_info, "TOTALPATH"),
             recogn_file: extract_key_and_read(file, &metadata.page_info, "RECOGNFILE"),
             recogn_text: extract_key_and_read(file, &metadata.page_info, "RECOGNTEXT"),
@@ -374,21 +366,13 @@ impl Layer {
     /// Creates a layer purely by cloning [meta](metadata::MetaMap) and reading the [contents](Layer::content) with [extract_key_and_read].
     pub fn from_meta(meta: &metadata::MetaMap, file: &mut File) -> Self {
         Layer {
-            metadata: meta.clone(),
+            is_background: meta.get("LAYERNAME").map(|n| n[0].eq("BGLAYER")).unwrap_or(false),
             content: extract_key_and_read(file, meta, "LAYERBITMAP"),
         }
     }
 
-    pub fn get_name(&self) -> Option<&str> {
-        self.metadata.get("LAYERNAME").map(|n| n[0].as_str())
-    }
-
     pub fn is_background(&self) -> bool {
-        if let Some(name) = self.get_name() {
-            "BGLAYER".eq(name)
-        } else {
-            false
-        }
+        self.is_background
     }
 }
 
