@@ -25,7 +25,7 @@ pub struct Notebook {
     /// Is the [Metadata] of the `.note` file
     pub metadata: Metadata,
     /// The file name (not including the extension)
-    pub name: String,
+    pub file_name: String,
     /// The ID used to identify the file, see [Metadata::file_id]
     pub file_id: String,
     /// A list containing all the [Titles](Title)

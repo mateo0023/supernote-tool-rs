@@ -79,7 +79,7 @@ const LAYER_KEYS: [&str; 5] = ["MAINLAYER", "LAYER1", "LAYER2", "LAYER3", "BGLAY
 
 /// Loads
 pub fn load(path: std::path::PathBuf) -> io::Result<Notebook> {
-    let name = path.file_name().unwrap().to_str().unwrap();
+    let name = path.file_stem().unwrap().to_str().unwrap();
     let mut file = File::open(path.clone())?;
 
     Notebook::from_file(&mut file, name.to_string())
@@ -245,7 +245,7 @@ fn parse_pages(file: &mut File, addrs: Vec<(f_fmt::AddrType, String)>) -> io::Re
 ///
 /// # Returns
 /// It returns a block
-pub fn get_content_at_address(file: &mut File, addr: u64) -> io::Result<Vec<u8>> {
+fn get_content_at_address(file: &mut File, addr: u64) -> io::Result<Vec<u8>> {
     if addr == 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -344,6 +344,8 @@ impl metadata::Metadata {
 }
 
 impl Notebook {
+    /// Create a [Notebook] given an open `.note` file and 
+    /// a [file names](String)
     pub fn from_file(file: &mut File, name: String) -> io::Result<Self> {
         let metadata = Metadata::from_file(file)?;
         let file_id = metadata.file_id.clone();
@@ -365,7 +367,7 @@ impl Notebook {
             links,
             pages,
             page_id_map,
-            name,
+            file_name: name,
         })
     }
 }

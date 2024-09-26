@@ -1,6 +1,7 @@
 use std::error::Error;
 use std::cmp::*;
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use rfd::FileDialog;
@@ -16,11 +17,11 @@ pub struct MyApp {
     notebooks: Vec<Notebook>,
     titles: Vec<TitleHolder>,
     colormap: ColorMap,
-    out_path: String,
+    out_folder: Option<PathBuf>,
     out_err: Option<String>,
 }
 
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Default)]
 struct TitleHolder {
     file_id: String,
     file_name: String,
@@ -28,14 +29,12 @@ struct TitleHolder {
     titles: Vec<TitleEditor>,
 }
 
-#[derive(Default, Serialize, Deserialize)]
-struct TitleEditor {
+#[derive(Default)]
+pub struct TitleEditor {
     title: String,
-    #[serde(skip)]
     persis_id: Option<egui::Id>,
     /// The index that the title contains
     title_index: Option<usize>,
-    #[serde(skip)]
     img_texture: Option<egui::TextureHandle>,
     level: i32,
     children: Option<Vec<TitleEditor>>,
@@ -51,7 +50,10 @@ struct TitleEditor {
 #[derive(Default, Serialize, Deserialize)]
 pub struct AppCache {
     /// Maps between file_id and Title Cache
-    notebooks: HashMap<String, Vec<TitleCache>>
+    notebooks: HashMap<String, Vec<TitleCache>>,
+    /// Wether to combina all the [Notebook]s into 
+    /// a single pdf or export them separately.
+    combine_pdfs: bool,
 }
 
 /// Will be used to store the relevant information
@@ -73,7 +75,7 @@ impl MyApp {
             notebooks: vec![],
             titles: vec![],
             colormap: ColorMap::default(),
-            out_path: "./test/out.pdf".to_string(),
+            out_folder: None,
             out_err: None,
             app_cache: AppCache::load_or_default(),
         }
@@ -104,11 +106,18 @@ impl MyApp {
                 }
             }
         }
-        for note in &self.notebooks {
-            if let Err(e) = note.to_pdf_file(&self.colormap, &self.out_path) {
-                self.out_err.get_or_insert("".to_string())
-                    .push_str(format!("\n{}", e).as_str());
+
+        if self.notebooks.len() < 2 || !self.app_cache.combine_pdfs {
+            for note in &self.notebooks {
+                if let Some(path) = &self.out_folder {
+                    if let Err(e) = note.to_pdf_file(&self.colormap, path) {
+                        self.out_err.get_or_insert("".to_string())
+                            .push_str(format!("\n{}", e).as_str());
+                    }
+                }
             }
+        } else {
+            todo!("Implement combining PDFs");
         }
         
         Ok(())
@@ -125,23 +134,36 @@ impl MyApp {
 impl eframe::App for MyApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         egui::CentralPanel::default().show(ctx, |ui| {
-            if ui.button("Select File").clicked() {
-                if let Some(path_list) = FileDialog::new().add_filter("Supernote File", &["note"]).pick_files() {
-                    for path in path_list {
-                        match crate::io::load(path) {
-                            Ok(note) => if let Err(e) = self.add_notebook(note, ctx) {
-                                todo!("Unable to add notebook {}", e);
-                            },
-                            Err(e) => todo!("Unable to load with e {}", e),
+            ui.horizontal(|ui| {
+                if ui.button("Select File").clicked() {
+                    if let Some(path_list) = FileDialog::new().add_filter("Supernote File", &["note"]).pick_files() {
+                        for path in path_list {
+                            match crate::io::load(path) {
+                                Ok(note) => if let Err(e) = self.add_notebook(note, ctx) {
+                                    todo!("Unable to add notebook {}", e);
+                                },
+                                Err(e) => todo!("Unable to load with e {}", e),
+                            }
                         }
                     }
                 }
-            }
-
-            if !self.notebooks.is_empty() && ui.button("Export to PDF").clicked() {
-                if let Err(e) = self.package_and_export() {
-                    self.out_err = Some(format!("{e}"));
+    
+                match self.out_folder.is_some() {
+                    true => {
+                        if !self.notebooks.is_empty() && ui.button("Export to PDF").clicked() {
+                            if let Err(e) = self.package_and_export() {
+                                self.out_err = Some(format!("{e}"));
+                            }
+                        }
+                    },
+                    false => if ui.button("Select OutPut Folder").clicked() {
+                        self.out_folder = FileDialog::new().pick_folder();
+                    },
                 }
+            });
+
+            if self.notebooks.len() > 1 {
+                ui.checkbox(&mut self.app_cache.combine_pdfs, "Combine Notebooks?");
             }
 
             if let Some(e) = &self.out_err {
@@ -150,10 +172,11 @@ impl eframe::App for MyApp {
 
             let mut title_bx = vec![];
             for holder in self.titles.iter_mut() {
-                ui.label(&holder.file_name);
-                for title in holder.titles.iter_mut() {
-                    title_bx.extend(title.show(ui));
-                }
+                ui.collapsing(holder.file_name.clone(), |ui| {
+                    for title in holder.titles.iter_mut() {
+                        title_bx.extend(title.show(ui));
+                    }
+                });
             }
 
             if let Some((txt_box, Some(texture))) = title_bx.iter().find(|(it, _)| it.has_focus()).or(title_bx.iter().find(|(i, _)| i.hovered())) {
@@ -187,7 +210,7 @@ impl TitleHolder {
     pub fn from_notebook(notebook: &Notebook, ctx: &egui::Context) -> Self {
         let mut titles = TitleHolder {
             file_id: notebook.file_id.clone(),
-            file_name: notebook.name.clone(),
+            file_name: notebook.file_name.clone(),
             titles: vec![],
         };
         notebook.titles.iter().enumerate()
@@ -309,7 +332,7 @@ impl AppCache {
         match std::fs::File::open(SETTINGS_PATH) {
             Ok(f) => match serde_json::from_reader(f) {
                 Ok(cache) => cache,
-                Err(e) => todo!("Serde: {}", e),
+                Err(_) => Default::default(),
             },
             Err(_) => Default::default(),
         }
@@ -322,11 +345,10 @@ impl AppCache {
     }
 
     /// Either updates the [notebook](Notebook)'s titles or it 
-    /// creates a cache for it.
+    /// creates a cache for the notebook.
     pub fn load_or_add(&mut self, notebook: &mut Notebook) -> Result<(), Box<dyn Error>> {
         match self.notebooks.get_mut(&notebook.file_id) {
             Some(cache) => {
-                println!("Already Had in Cache");
                 // Already had cache, update title.
                 let mut titles = TitleCache::from_notebook(notebook)?;
                 std::mem::swap(cache, &mut titles);

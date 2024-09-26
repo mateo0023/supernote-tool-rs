@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::Path;
 
 use crate::data_structures::*;
 use crate::decoder::{decode_separate, ColorMap, DecodedImage};
@@ -280,9 +281,10 @@ impl Notebook {
         to_pdf(self, colormap)
     }
 
-    pub fn to_pdf_file(&self, colormap: &ColorMap, path: &str) -> Result<std::fs::File, String> {
+    pub fn to_pdf_file(&self, colormap: &ColorMap, path: &Path) -> Result<std::fs::File, String> {
         let mut doc = self.to_pdf(colormap)?;
-        doc.save(path).map_err(|e| e.to_string())
+        let new_path = path.join(format!("{}.pdf", self.file_name));
+        doc.save(new_path).map_err(|e| e.to_string())
     }
 }
 
