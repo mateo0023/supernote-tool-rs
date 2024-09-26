@@ -341,7 +341,7 @@ impl TitleEditor {
             },
             None => {
                 // Simply add 
-                vec![(ui.text_edit_multiline(&mut self.title), self.img_texture.clone())]
+                vec![(ui.text_edit_singleline(&mut self.title), self.img_texture.clone())]
             },
         }
     }
