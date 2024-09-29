@@ -40,8 +40,8 @@ pub struct TitleEditor {
     img_texture: Option<egui::TextureHandle>,
     level: i32,
     children: Option<Vec<TitleEditor>>,
-    /// The coordinates in the page for the title.
-    coords: [i32; 4],
+    /// The hash value of the content (encoded).
+    hash: u64,
     /// The page_id on the notebook.
     page_id: String,
 }
@@ -64,11 +64,20 @@ pub struct AppCache {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TitleCache {
     /// The corrected title.
-    title: String,
+    title: Option<String>,
     /// The Page Id from the Notebook
     page_id: String,
-    /// The coordinates of the title.
-    coords: [i32; 4],
+    /// The hash value of the [content](Title::content).
+    hash: u64,
+}
+
+/// Loads the as a texture with the given context and returns the [TextureHandle](egui::TextureHandle)
+/// or [DecoderError].
+pub fn add_image(bitmap: &[u8], width: usize, height: usize, hash: u64, ctx: &egui::Context)
+    -> Result<egui::TextureHandle, DecoderError>
+{
+    let image = egui::ColorImage::from_rgba_unmultiplied([width, height], bitmap);
+    Ok(ctx.load_texture(format!("title#{}", hash), image, egui::TextureOptions::default()))
 }
 
 impl MyApp {
@@ -107,7 +116,7 @@ impl MyApp {
     /// into a PDF (or PDFs).
     fn package_and_export(&mut self) -> Result<(), Box<dyn Error>> {
         self.update_cache();
-        self.app_cache.save()?;
+        self.process_result(self.app_cache.save());
 
         for (notebook, holder) in self.notebooks.iter_mut() {
             for title in holder.titles.iter() {
@@ -128,10 +137,14 @@ impl MyApp {
                 }
             }
         } else if let Some(path) = &self.out_folder {
-            if let Err(e) = to_file(export_multiple(&self.notebooks.iter().map(|(n, _)| n).collect::<Vec<_>>(), &self.colormap)?, path, &self.out_name) {
-                self.out_err.get_or_insert(vec![])
-                    .push(e);
-            }
+            self.process_result(
+                to_file(
+                    export_multiple(
+                        &self.notebooks.iter().map(|(n, _)| n).collect::<Vec<_>>(),
+                        &self.colormap
+                    )?, path, &self.out_name
+                )
+            );
         }
         
         Ok(())
@@ -143,6 +156,16 @@ impl MyApp {
             self.app_cache.update(k, v);
         }
     }
+
+    fn process_result<T>(&mut self, r: Result<T, Box<dyn Error>>) -> Option<T> {
+        match r {
+            Ok(o) => Some(o),
+            Err(e) => {
+                self.add_err(e);
+                None
+            },
+        }
+    }
 }
 
 impl eframe::App for MyApp {
@@ -152,12 +175,12 @@ impl eframe::App for MyApp {
                 if ui.button("Select File").clicked() {
                     if let Some(path_list) = FileDialog::new().add_filter("Supernote File", &["note"]).pick_files() {
                         for file_p in path_list {
-                            match crate::io::load(file_p) {
-                                Ok(note) => if let Err(e) = self.add_notebook(note, ctx) {
-                                    self.add_err(e);
-                                },
-                                Err(e) => self.add_err(e),
-                            }
+                            self.process_result(
+                                crate::io::load(file_p)
+                            ).and_then(|n| {
+                                let r = self.add_notebook(n, ctx);
+                                self.process_result(r)
+                            });
                         }
                     }
                 }
@@ -229,14 +252,6 @@ impl eframe::App for MyApp {
     }
 }
 
-impl Title {
-    pub fn render_and_add(&self, ctx: &egui::Context) -> Result<egui::TextureHandle, DecoderError> {
-        let bitmap = self.render_bitmap()?;
-        let image = egui::ColorImage::from_rgba_unmultiplied([self.width, self.height], &bitmap);
-        Ok(ctx.load_texture(format!("title#{:?}{}", self.coords, self.page_index), image, egui::TextureOptions::default()))
-    }
-}
-
 impl TitleHolder {
     pub fn from_notebook(notebook: &Notebook, ctx: &egui::Context) -> Self {
         let mut titles = TitleHolder {
@@ -277,15 +292,16 @@ impl TitleHolder {
 
 impl TitleEditor {
     pub fn new(title: &Title, idx: usize, page_id: &str, ctx: &egui::Context) -> Result<Self, DecoderError> {
-        let texture = title.render_and_add(ctx)?;
+        let bitmap = title.render_bitmap()?;
+        let texture = add_image(&bitmap, title.width, title.height, title.content_hash, ctx)?;
         Ok(TitleEditor {
-            title: title.name.clone(),
+            title: title.get_name(),
             persis_id: None,
             img_texture: Some(texture),
             title_index: Some(idx),
             level: title.title_level.into(),
             children: None,
-            coords: title.coords,
+            hash: title.content_hash,
             page_id: page_id.to_string(),
         })
     }
@@ -320,29 +336,29 @@ impl TitleEditor {
 
     fn as_single_cache(&self) -> TitleCache {
         TitleCache {
-            title: self.title.clone(),
+            title: match self.title.is_empty() {
+                true => None,
+                false => Some(self.title.clone()),
+            },
             page_id: self.page_id.clone(),
-            coords: self.coords,
+            hash: self.hash,
         }
     }
 
     /// Renders all the titles as [CollapsingHeader](egui::CollapsingHeader)
     /// 
-    /// If no [children](Self::children), simply render a [](egui::TextBox)
+    /// If no [children](Self::children), simply render a [TextEdit](egui::TextEdit)
     pub fn show(&mut self, ui: &mut egui::Ui) -> Vec<(egui::Response, Option<egui::TextureHandle>)> {
         match &mut self.children {
             Some(children) => {
                 let &mut id = self.persis_id.get_or_insert(
-                    ui.make_persistent_id(format!("{}_{}", self.level, self.title))
+                    ui.make_persistent_id(format!("collapsing#{}", self.hash))
                 );
                 let mut text_boxes = vec![];
 
                 egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false)
                     .show_header(ui, |ui| {
-                        text_boxes.push((
-                            ui.text_edit_singleline(&mut self.title),
-                            self.img_texture.clone()
-                        ));
+                        text_boxes.push((Self::text_edit(&mut self.title, ui), self.img_texture.clone()));
                     })
                     .body(|ui| {
                         text_boxes.extend(children.iter_mut().flat_map(|t| t.show(ui)));
@@ -351,10 +367,16 @@ impl TitleEditor {
                 text_boxes
             },
             None => {
-                // Simply add 
-                vec![(ui.text_edit_singleline(&mut self.title), self.img_texture.clone())]
+                // Simply add text box
+                vec![(Self::text_edit(&mut self.title, ui), self.img_texture.clone())]
             },
         }
+    }
+
+    fn text_edit(title: &mut String, ui: &mut egui::Ui) -> egui::Response {
+        ui.horizontal(|ui| {
+            ui.text_edit_singleline(title)
+        }).inner
     }
 }
 
@@ -390,8 +412,10 @@ impl AppCache {
                 for c in old_cache {
                     for (i, other) in cache.iter_mut().enumerate() {
                         if other.equals(&c) {
-                            notebook.update_title_at_idx(i, &c.title);
-                            other.title = c.title;
+                            if let Some(name) = c.title.as_ref() {
+                                notebook.update_title_at_idx(i, name);
+                                other.title = c.title;
+                            }
                             break;
                         }
                     }
@@ -436,23 +460,23 @@ impl TitleCache {
         Ok(TitleCache {
             title: title.name.clone(),
             page_id,
-            coords: title.coords,
+            hash: title.content_hash,
         })
     }
 
-    /// Checks wether they point to the same Title
-    /// (page_id and coords)
+    /// Checks wether they point to the same [Title]
+    /// (page_id and hash)
     pub fn equals(&self, rhs: &Self) -> bool {
         self.page_id.eq(&rhs.page_id)
-        && self.coords.eq(&rhs.coords)
+        && self.hash.eq(&rhs.hash)
     }
 }
 
 impl std::hash::Hash for TitleCache {
-    /// Hash only the [page_id](Self::page_id) and [coordinates](Self::coords)
+    /// Hash only the [page_id](Self::page_id) and [hash](Self::coords)
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.page_id.hash(state);
-        self.coords.hash(state);
+        self.hash.hash(state);
     }
 }
 

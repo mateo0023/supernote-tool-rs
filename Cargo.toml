@@ -12,6 +12,7 @@ egui = "0.28.1"
 libc = "0.2.158"
 lopdf = "0.34.0"
 regex = "1.10.3"
+reqwest = {version = "0.12.7", features = ["blocking", "json", "multipart"]}
 rfd = "0.15.0"
 serde = {version = "1.0.195", features = ["derive"]}
 serde_json = "1.0.111"

@@ -2,8 +2,6 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::fs::File;
 
-use crate::decoder::decode_separate;
-
 use super::io::extract_key_and_read;
 
 pub mod metadata;
@@ -24,11 +22,8 @@ pub enum DataStructureError {
 
 #[derive(Debug, Clone, Copy)]
 pub enum StructType {
-    Notebook,
     Title,
     Link,
-    Page,
-    Layer
 }
 
 /// Will contain all the necessary information from the Notebook
@@ -63,10 +58,12 @@ pub struct Notebook {
 
 #[derive(Debug, Serialize, Default)]
 pub struct Title {
-    /// The decoded content of the Title.
+    /// The encoded content of the Title.
     /// 
     /// To be decoded into a Bitmap
     pub content: Vec<u8>,
+    /// The hash of [Self::content]
+    pub content_hash: u64,
     /// Essentially the type of title
     /// 
     /// [TitleLevel] will later be used to determine
@@ -83,7 +80,7 @@ pub struct Title {
     pub coords: [i32; 4],
     pub width: usize,
     pub height: usize,
-    pub name: String,
+    pub name: Option<String>,
 }
 #[derive(Debug, Serialize)]
 pub struct Link {
@@ -139,42 +136,13 @@ fn process_rect_to_corners(rect: Vec<i32>) -> Result<[i32; 4], Box<dyn Error>> {
     }
 }
 
+/// Will hash the string using [DefaultHasher](std::hash::DefaultHasher).
+fn hash(content: &[u8]) -> u64 {
+    use std::hash::{DefaultHasher, Hasher as _};
 
-/// Decode the content and then get a blurred grayscale image (1 byte per pixel).
-fn get_blurred_image(content: &[u8], width: usize, height: usize) -> Result<Vec<u8>, Box<dyn Error>> {
-    Ok(blur_image(
-        &decode_separate(content, width * height)?.as_black_white(),
-        width, height
-    ))
-}
-
-/// Will blur the given grayscale image (1 byte per pixel)
-fn blur_image(img: &[u8], w: usize, h: usize) -> Vec<u8> {
-    const R: usize = 3;
-    let mut blurred = Vec::from(img);
-    let get_i = move |x: usize, y: usize| x + y * w;
-
-    for idx in 0..(w*h) {
-        let x_c = idx % w;
-        let y_c = idx / w;
-        //Only blur pixel if not black
-        if img[get_i(x_c, y_c)] > 100 {
-            let min_x = x_c.saturating_sub(R);
-            let max_x = (x_c + R + 1).min(w);
-            let min_y = y_c.saturating_sub(R);
-            let max_y = (y_c + R + 1).min(h);
-
-            let points: Vec<_> = (min_x..max_x)
-                .flat_map(|x| (min_y..max_y)
-                    .map(move |y| get_i(x, y))
-                ).collect();
-            let weight = points.len() as f32;
-            let av = points.into_iter().map(|i| img[i] as f32).sum::<f32>() / weight;
-            blurred[get_i(x_c, y_c)] = av as u8;
-        };
-    }
-
-    blurred
+    let mut hasher = DefaultHasher::new();
+    hasher.write(content);
+    hasher.finish()
 }
 
 // ###########################################################################################################
@@ -187,9 +155,14 @@ fn blur_image(img: &[u8], w: usize, h: usize) -> Vec<u8> {
 
 impl Notebook {
     /// Update the title's name field given the index it had.
+    /// 
+    /// Will set it to none if empty.
     pub fn update_title_at_idx(&mut self, title_idx: usize, new_title: &str) {
         if let Some(title) = self.titles.get_mut(title_idx) {
-            title.name = new_title.to_string();
+            title.name = match new_title.is_empty() {
+                true => None,
+                false => Some(new_title.to_string()),
+            };
         }
     }
 
@@ -212,11 +185,12 @@ impl Notebook {
 }
 
 impl Title {
+    /// Create a new [Title] that will be used to indicate a file.
     pub fn new_for_file(name: &str, index: usize) -> Self {
         Title {
             title_level: TitleLevel::FileLevel,
             page_index: index,
-            name: name.to_string(),
+            name: Some(name.to_string()),
             ..Default::default()
         }
     }
@@ -299,24 +273,26 @@ impl Title {
         
         let content = extract_key_and_read(file, metadata, "TITLEBITMAP")
             .ok_or(DataStructureError::MissingField { t: StructType::Title, k: "TITLEBITMAP".to_string() })?;
-        let title = {
-            let img = get_blurred_image(&content, width, height)?;
-            match tesseract::ocr_from_frame(&img, width as i32, height as i32, 1, width as i32, "eng") {
-                Ok(t) => t.chars().filter(|c| c.is_ascii() || *c == '\n').collect(),
-                Err(err) => todo!("{}", err),
-            }
-        };
-        
+        let content_hash = hash(&content);
+
         Ok(Title {
             content,
+            content_hash,
             page_index,
             position: page_pos,
             title_level,
             coords,
             width,
             height,
-            name: title,
+            name: None,
         })
+    }
+
+    /// Returns the title's name (text contained in there).
+    /// 
+    /// Will default to an empty string.
+    pub fn get_name(&self) -> String {
+        self.name.clone().unwrap_or_default()
     }
 }
 
@@ -501,11 +477,11 @@ impl std::fmt::Display for StructType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use StructType::*;
         match self {
-            Notebook => write!(f, "Notebook"),
+            // Notebook => write!(f, "Notebook"),
             Title => write!(f, "Title"),
             Link => write!(f, "Link"),
-            Page => write!(f, "Page"),
-            Layer => write!(f, "Layer"),
+            // Page => write!(f, "Page"),
+            // Layer => write!(f, "Layer"),
         }
     }
 }

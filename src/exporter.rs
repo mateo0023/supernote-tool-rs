@@ -10,8 +10,6 @@ const A4_HEIGHT: i32 = crate::common::f_fmt::PAGE_HEIGHT as i32;
 
 mod potrace;
 
-pub use potrace::PotraceError;
-
 use lopdf::content::Content;
 use lopdf::{dictionary, Document, Object, ObjectId, Stream};
 
@@ -197,7 +195,7 @@ fn add_toc(doc: &mut Document, titles: &[Title], page_ids: &[ObjectId], catalog_
     
         // Create the bookmark dictionary
         let mut bookmark_dict = lopdf::Dictionary::new();
-        bookmark_dict.set("Title", Object::string_literal(title.name.clone()));
+        bookmark_dict.set("Title", Object::string_literal(title.get_name()));
         bookmark_dict.set("Parent", Object::Reference(parent_id.unwrap_or(outlines_id)));
         bookmark_dict.set(
             "Dest",
