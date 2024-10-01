@@ -12,8 +12,6 @@ use crate::error::*;
 use crate::exporter::export_multiple;
 use crate::io::to_file;
 
-const SETTINGS_PATH: &str = "./test/config.json";
-
 pub struct MyApp {
     app_cache: AppCache,
     notebooks: Vec<(Notebook, TitleHolder)>,
@@ -86,7 +84,7 @@ impl MyApp {
             colormap: ColorMap::default(),
             out_folder: None,
             out_err: None,
-            app_cache: AppCache::load_or_default(),
+            app_cache: AppCache::default(),
             out_name: String::new(),
             settings_path: None,
         }
@@ -117,7 +115,9 @@ impl MyApp {
     /// into a PDF (or PDFs).
     fn package_and_export(&mut self) -> Result<(), Box<dyn Error>> {
         self.update_cache();
-        self.process_result(self.app_cache.save_to(self.settings_path.as_ref()));
+        if let Some(p) = self.settings_path.as_ref() {
+            self.process_result(self.app_cache.save_to(p));
+        }
 
         self.update_note_from_holder();
 
@@ -246,9 +246,10 @@ impl eframe::App for MyApp {
                     if ui.button("Save Cache").clicked() {
                         if let Some(out_path) = FileDialog::new().add_filter("JSON", &["json"]).save_file() {
                             self.update_cache();
-                            if let Err(e) = self.app_cache.save_to(Some(&out_path)) {
+                            if let Err(e) = self.app_cache.save_to(&out_path) {
                                 self.add_err(e);
                             }
+                            self.settings_path = Some(out_path);
                         }
                     }
                 });
@@ -500,18 +501,6 @@ impl AppCache {
         Ok(())
     }
 
-    /// Loads the app from the default path for settings, returning the [Default](Self::default())
-    /// value if anything fails (either the reading the file or file format).
-    pub fn load_or_default() -> Self {
-        match std::fs::File::open(SETTINGS_PATH) {
-            Ok(f) => match serde_json::from_reader(f) {
-                Ok(cache) => cache,
-                Err(_) => Default::default(),
-            },
-            Err(_) => Default::default(),
-        }
-    }
-
     /// Replaces the Cache data at the key ([file_id](Notebook::file_id) by the new
     /// [TitleCache]
     pub fn update(&mut self, k: String, v: HashMap<u64, TitleCache>) {
@@ -550,8 +539,9 @@ impl AppCache {
         Ok(())
     }
 
-    pub fn save_to(&self, path: Option<&PathBuf>) -> Result<(), Box<dyn Error>> {
-        let f = std::fs::File::create(path.unwrap_or(&PathBuf::from(SETTINGS_PATH)))?;
+    /// Save to the given path, if any
+    pub fn save_to(&self, path: &PathBuf) -> Result<(), Box<dyn Error>> {
+        let f = std::fs::File::create(path)?;
         serde_json::to_writer(f, self)?;
         Ok(())
     }
