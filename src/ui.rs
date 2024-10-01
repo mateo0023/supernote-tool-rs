@@ -190,61 +190,71 @@ impl MyApp {
 impl eframe::App for MyApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         egui::CentralPanel::default().show(ctx, |ui| {
+            // Load/Save Export buttons
             ui.horizontal(|ui| {
-                if ui.button("Select File").clicked() {
-                    if let Some(path_list) = FileDialog::new().add_filter("Supernote File", &["note"]).pick_files() {
-                        for file_p in path_list {
-                            self.process_result(
-                                crate::io::load(file_p)
-                            ).and_then(|n| {
-                                let r = self.add_notebook(n, ctx);
-                                self.process_result(r)
-                            });
-                        }
-                    }
-                }
-    
-                match self.out_folder.is_some() {
-                    true => {
-                        if !self.notebooks.is_empty() && ui.button("Export to PDF").clicked() {
-                            if let Err(e) = self.package_and_export() {
-                                self.add_err(e);
+                ui.vertical(|ui| {
+                    if ui.button("Add File(s)").clicked() {
+                        if let Some(path_list) = FileDialog::new().add_filter("Supernote File", &["note"]).pick_files() {
+                            for file_p in path_list {
+                                self.process_result(
+                                    crate::io::load(file_p)
+                                ).and_then(|n| {
+                                    let r = self.add_notebook(n, ctx);
+                                    self.process_result(r)
+                                });
                             }
                         }
-                    },
-                    false => if ui.button("Select OutPut Folder").clicked() {
+                    }
+
+                    if !self.notebooks.is_empty() && ui.button(format!(
+                        "Close Notebook{}",
+                        if self.notebooks.len() < 2 {""} else {"s"}
+                    )).clicked() {
+                        self.notebooks.clear();
+                    }
+                });
+                
+                ui.vertical(|ui| {
+                    if ui.button(format!(
+                        "{} Output Folder",
+                        if self.out_folder.is_none() {"Add"} else {"Update"}
+                    )).clicked() {
                         self.out_folder = FileDialog::new().pick_folder();
-                    },
-                }
-
-
-                if !self.notebooks.is_empty() && ui.button("Close Notebooks").clicked() {
-                    self.notebooks.clear();
-                }
-
-                if ui.button("Load new Settings").clicked() {
-                    if let Some(paths) = FileDialog::new().add_filter("Settings", &["json"]).pick_files() {
-                        self.update_cache();
-                        for file_p in paths {
-                            let file_p = self.settings_path.insert(file_p);
-                            if let Err(e) = self.app_cache.marge_from_path(file_p) {
-                                self.add_err(e);
-                            }
-                        }
-                        self.update_from_cache();
                     }
-                }
 
-                if ui.button("Save Cache").clicked() {
-                    if let Some(out_path) = FileDialog::new().add_filter("JSON", &["json"]).save_file() {
-                        self.update_cache();
-                        if let Err(e) = self.app_cache.save_to(Some(&out_path)) {
+                    if self.out_folder.is_some() && !self.notebooks.is_empty() && ui.button("Export to PDF").clicked() {
+                        if let Err(e) = self.package_and_export() {
                             self.add_err(e);
                         }
                     }
-                }
+                });
+
+                ui.vertical(|ui| {
+                    if ui.button("Load Cache").clicked() {
+                        if let Some(paths) = FileDialog::new().add_filter("Settings", &["json"]).pick_files() {
+                            self.update_cache();
+                            for file_p in paths {
+                                let file_p = self.settings_path.insert(file_p);
+                                if let Err(e) = self.app_cache.marge_from_path(file_p) {
+                                    self.add_err(e);
+                                }
+                            }
+                            self.update_from_cache();
+                        }
+                    }
+    
+                    if ui.button("Save Cache").clicked() {
+                        if let Some(out_path) = FileDialog::new().add_filter("JSON", &["json"]).save_file() {
+                            self.update_cache();
+                            if let Err(e) = self.app_cache.save_to(Some(&out_path)) {
+                                self.add_err(e);
+                            }
+                        }
+                    }
+                });
             });
 
+            // Combine checkmark
             if self.notebooks.len() > 1 {
                 ui.horizontal(|ui| {
                     ui.checkbox(&mut self.app_cache.combine_pdfs, "Combine Notebooks?");
@@ -254,40 +264,53 @@ impl eframe::App for MyApp {
                 });
             }
 
+            // Error showcasing
             if self.out_err.is_some() && ui.button("Clear Errors").clicked() {
                 self.out_err = None;
             }
             if let Some(e) = &self.out_err {
-                ui.collapsing("Errors: ", |ui| {
-                    for err in e.iter() {
-                        ui.label(err.to_string());
-                    }
-                });
+                if e.len() < 2 {
+                    ui.label(e[0].to_string());
+                } else {
+                    ui.collapsing("Errors: ", |ui| {
+                        for err in e.iter() {
+                            ui.label(err.to_string());
+                        }
+                    });
+                }
             }
 
-            let mut title_bx = vec![];
-            for (_, holder) in self.notebooks.iter_mut() {
-                ui.collapsing(holder.file_name.clone(), |ui| {
-                    for title in holder.titles.iter_mut() {
-                        title_bx.extend(title.show(ui));
+            egui::ScrollArea::vertical().max_width(f32::INFINITY).show(ui, |ui| {
+                // TitleHolder render
+                let mut title_bx = vec![];
+                for (_, holder) in self.notebooks.iter_mut() {
+                    ui.collapsing(holder.file_name.clone(), |ui| {
+                        for title in holder.titles.iter_mut() {
+                            title_bx.extend(title.show(ui));
+                        }
+                    });
+                }
+    
+                // Showing the image.
+                if let Some((txt_box, Some(texture))) = title_bx.iter().find(|(it, _)| it.has_focus()).or(title_bx.iter().find(|(i, _)| i.hovered())) {
+                    let width = ctx.input(|i: &egui::InputState| i.screen_rect()).width() - txt_box.interact_rect.right();
+                    let height = width / texture.aspect_ratio();
+    
+                    let mid_y = txt_box.interact_rect.top() + txt_box.interact_rect.height() * 0.5;
+                    let min = egui::pos2(txt_box.interact_rect.right(), mid_y - height * 0.5);
+    
+                    let rect = egui::Rect::from_min_size(min, egui::Vec2 { x: width, y: height });
+                    
+                    if txt_box.gained_focus() {
+                        ui.scroll_to_rect(rect, None);
                     }
-                });
-            }
-
-            if let Some((txt_box, Some(texture))) = title_bx.iter().find(|(it, _)| it.has_focus()).or(title_bx.iter().find(|(i, _)| i.hovered())) {
-                let max_width = ctx.input(|i: &egui::InputState| i.screen_rect()).width() - txt_box.rect.right();
-                
-                egui::Window::new("Image")
-                .vscroll(false)
-                .current_pos(txt_box.rect.right_top())
-                .show(ctx, |ui| {
-                    ui.add(
-                        egui::Image::from_texture(texture)
+                    
+                    egui::Image::from_texture(texture)
                         .maintain_aspect_ratio(true)
-                        .max_width(max_width)
-                    );
-                });
-            }
+                        .max_width(width)
+                        .paint_at(ui, rect);
+                }
+            });
         
         });
     }
