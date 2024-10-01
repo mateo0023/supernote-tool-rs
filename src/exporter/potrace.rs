@@ -1,6 +1,8 @@
 pub mod bindings;
 mod wrapper;
 
+pub use wrapper::Word;
+
 use std::error::Error;
 
 use crate::decoder::{DecodedImage, ColorList, ColorMap};
@@ -12,10 +14,6 @@ pub enum PotraceError {
     TraceError(i32),
     PotraceParams,
     MemAlloc,
-    Bounds{
-        word_idx: usize,
-        map_len: usize,
-    }
 }
 
 impl Error for PotraceError{}
@@ -30,11 +28,6 @@ impl std::fmt::Display for PotraceError {
             ),
             PotraceError::PotraceParams => write!(f, "Unable to create potrace parameters"),
             PotraceError::MemAlloc => write!(f, "Unable to allocate enough memory to trace"),
-            PotraceError::Bounds { word_idx, map_len } => write!(
-                f,
-                "word_idx {} out of bounds (len {})",
-                word_idx, map_len
-            ),
         }
     }
 }

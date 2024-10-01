@@ -14,6 +14,16 @@ mod error {
 
 mod ui;
 
+#[cfg(feature = "test_mode")]
+fn main() {
+    let notebook = io::load("./test/01. Asset Allocation.note".into()).unwrap();
+    notebook.to_pdf(&decoder::ColorMap::default())
+    .unwrap()
+    .save("./test/01. Asset Allocation.pdf")
+    .unwrap();
+}
+
+#[cfg(not(feature = "test_mode"))]
 fn main() {
     let app = ui::MyApp::new();
     let _ = eframe::run_native(

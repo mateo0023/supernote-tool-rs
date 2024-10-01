@@ -212,6 +212,7 @@ impl eframe::App for MyApp {
                         "Close Notebook{}",
                         if self.notebooks.len() < 2 {""} else {"s"}
                     )).clicked() {
+                        self.update_cache();
                         self.notebooks.clear();
                     }
                 });

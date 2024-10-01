@@ -14,6 +14,8 @@ pub struct Bitmap {
     pub bitmap: potrace_bitmap_t,
 }
 
+pub type Word = potrace_word;
+
 impl Bitmap {
     /// Create a new bitmap with the given width and height.
     pub fn new() -> Result<Self, Box<dyn Error>> {
@@ -41,7 +43,7 @@ impl Bitmap {
         }
     }
 
-    pub fn from_vec(data: &[bool]) -> Result<Self, Box<dyn Error>> {
+    pub fn from_vec(data: &[Word]) -> Result<Self, Box<dyn Error>> {
         // Create a new bitmap
         let mut bitmap = Self::new()?;
 
@@ -70,16 +72,12 @@ impl Bitmap {
     /// # Safety
     ///
     /// This method uses unsafe code to manipulate raw pointers and must be used with care.
-    fn set_pixels_from_vec(&mut self, data: &[bool]) -> Result<(), Box<dyn Error>> {
+    fn set_pixels_from_vec(&mut self, data: &[Word]) -> Result<(), Box<dyn Error>> {
         use std::slice;
 
         unsafe {
             // Obtain a mutable reference to the underlying Potrace bitmap.
             let bitmap = &mut self.bitmap;
-
-            // Number of bits in a `potrace_word`.
-            // Typically 32 or 64 bits, depending on the platform.
-            let word_bits = 8 * std::mem::size_of::<potrace_word>();
 
             // Get the number of words per scanline (row).
             // `bitmap.dy` is the number of words per scanline.
@@ -93,42 +91,7 @@ impl Bitmap {
                 dy_words * bitmap.h as usize,
             );
 
-            // Get the width and height of the bitmap as usize for indexing.
-            let width = bitmap.w as usize;
-            let height = bitmap.h as usize;
-
-            // Iterate over each pixel coordinate (x, y).
-            for y in 0..height {
-                for x in 0..width {
-                    // Calculate the index into the `data` array for the current pixel.
-                    let idx = y * width + x;
-
-                    // Get the value of the pixel from `data`.
-                    let value = data[idx];
-
-                    // Calculate the index into `map_slice` for the current pixel.
-                    let word_idx = y * dy_words + x / word_bits;
-
-                    // Calculate the bit index within the word for the current pixel.
-                    let bit_idx = word_bits - 1 - x%word_bits;
-
-                    // Boundary check: Ensure `word_idx` is within the bounds of `map_slice`.
-                    if word_idx >= map_slice.len() {
-                        return Err(Box::new(PotraceError::Bounds { word_idx, map_len: map_slice.len() }));
-                    }
-
-                    // Create a bitmask for the current pixel.
-                    let mask = 1 << bit_idx;
-
-                    if value {
-                        // Set the bit to 1 (black pixel).
-                        map_slice[word_idx] |= mask;
-                    } else {
-                        // Clear the bit to 0 (white pixel).
-                        map_slice[word_idx] &= !mask;
-                    }
-                }
-            }
+            std::ptr::copy(data.as_ptr(), map_slice.as_mut_ptr(), data.len());
         }
 
         Ok(())

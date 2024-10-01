@@ -10,6 +10,8 @@ const A4_HEIGHT: i32 = crate::common::f_fmt::PAGE_HEIGHT as i32;
 
 mod potrace;
 
+pub use potrace::Word as PotraceWord;
+
 use lopdf::content::Content;
 use lopdf::{dictionary, Document, Object, ObjectId, Stream};
 
@@ -349,12 +351,14 @@ fn add_internal_link(
 
 /// Exports a given page to the PDF Vector Commands
 fn page_to_commands(page: &Page, colormap: &ColorMap) -> Result<Content, Box<dyn Error>> {
+    use file_format_consts::{PAGE_HEIGHT, PAGE_WIDTH};
+
     let mut image = DecodedImage::default();
     for data in page.layers.iter()
         .filter(|l| !l.is_background())
         .filter_map(|l| l.content.as_ref())
     {
-        image += decode_separate(data, DecodedImage::DEFAULT_CAPACITY)?;
+        image += decode_separate(data, PAGE_WIDTH, PAGE_HEIGHT)?;
     }
 
     potrace::trace_and_generate(image, colormap).map(|operations| {
@@ -372,7 +376,7 @@ impl Notebook {
 
 impl Title {
     pub fn render_bitmap(&self) -> Result<Vec<u8>, DecoderError> {
-        let decoded = decode_separate(&self.content, self.width * self.height)?;
+        let decoded = decode_separate(&self.content, self.width, self.height)?;
         Ok(decoded.into_color(&ColorMap::default()))
     }
 }

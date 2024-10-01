@@ -1,8 +1,6 @@
 //! This module contains all the necessary functions to render a Page into
 //! a SVG file and other vizualisation formats.
 
-use crate::data_structures::file_format_consts::*;
-
 const ALL_BLANK: bool = false;
 
 const SPECIAL_LENGTH_MARKER: u8 = 0xff;
@@ -13,21 +11,25 @@ mod color;
 
 pub use color::{ColorMap, ColorList};
 
+use crate::exporter::PotraceWord;
+
 /// Stores the decoded information from the page or content
 #[derive(Debug)]
 pub struct DecodedImage {
     /// The amount of pixels pushed
     idx: usize,
     /// The amount of pixels expected
-    capacity: usize,
+    pixel_count: usize,
+    /// The number of pixels across
+    width: usize,
     /// Array of wether pixel at bit is that color
-    pub white: Vec<bool>,
+    pub white: Vec<PotraceWord>,
     /// Array of wether pixel at bit is that color
-    pub l_gray: Vec<bool>,
+    pub l_gray: Vec<PotraceWord>,
     /// Array of wether pixel at bit is that color
-    pub d_gray: Vec<bool>,
+    pub d_gray: Vec<PotraceWord>,
     /// Array of wether pixel at bit is that color
-    pub black: Vec<bool>,
+    pub black: Vec<PotraceWord>,
 }
 
 #[derive(Debug)]
@@ -58,11 +60,11 @@ impl std::fmt::Display for DecoderError {
 impl std::error::Error for DecoderError {}
 
 /// Decode a single Image/Layer into a [DecodedImage]
-pub fn decode_separate(data: &[u8], capacity: usize) -> Result<DecodedImage, DecoderError> {
+pub fn decode_separate(data: &[u8], width: usize, height: usize) -> Result<DecodedImage, DecoderError> {
     use std::collections::VecDeque;
 
     let mut data_iter = data.iter();
-    let mut image = DecodedImage::with_capacity(capacity);
+    let mut image = DecodedImage::new(width, height);
 
     let mut holder: Option<(u8, u8)> = None;
     let mut queue: VecDeque<(u8, usize)> = VecDeque::with_capacity(4);
@@ -110,7 +112,7 @@ pub fn decode_separate(data: &[u8], capacity: usize) -> Result<DecodedImage, Dec
 
     // Handle any remaining holder
     if let Some((colorcode, length_byte)) = holder {
-        let length = adjust_tail_length(length_byte, image.len(), image.capacity());
+        let length = adjust_tail_length(length_byte, image.len(), image.pixel_count());
         if length > 0 {
             image.push(colorcode, length)?;
         }
@@ -120,7 +122,7 @@ pub fn decode_separate(data: &[u8], capacity: usize) -> Result<DecodedImage, Dec
     if !image.is_full() {
         return Err(DecoderError::UncompressedLengthMismatch {
             actual: image.len(),
-            expected: image.capacity(),
+            expected: image.pixel_count(),
         });
     }
 
@@ -140,16 +142,18 @@ fn adjust_tail_length(tail_length: u8, current_length: usize, total_length: usiz
 }
 
 impl DecodedImage {
-    pub const DEFAULT_CAPACITY: usize = PAGE_HEIGHT * PAGE_WIDTH;
-
-    pub fn with_capacity(capacity: usize) -> Self {
+    pub fn new(width: usize, height: usize) -> Self {
+        let bits_per_word = PotraceWord::BITS as usize;
+        let words_per_scanline = (width + bits_per_word - 1) / bits_per_word;
+        let true_capacity = words_per_scanline * height;
         DecodedImage {
             idx: 0,
-            capacity,
-            white: vec![false; capacity],
-            l_gray: vec![false; capacity],
-            d_gray: vec![false; capacity],
-            black: vec![false; capacity],
+            pixel_count: width * height,
+            width,
+            white: vec![0; true_capacity],
+            l_gray: vec![0; true_capacity],
+            d_gray: vec![0; true_capacity],
+            black: vec![0; true_capacity],
         }
     }
 
@@ -157,11 +161,11 @@ impl DecodedImage {
     pub fn push(&mut self, colorcode: u8, length: usize) -> Result<(), DecoderError>{
         use color::ColorList::*;
         match color::ColorList::decode(colorcode)? {
-            White => Self::process(&mut self.white, &mut self.idx, length),
-            LightGray => Self::process(&mut self.l_gray, &mut self.idx, length),
-            DarkGray => Self::process(&mut self.d_gray, &mut self.idx, length),
-            Black => Self::process(&mut self.black, &mut self.idx, length),
-            Transparent => {self.idx = self.capacity().min(self.idx + length);},
+            White => Self::process(&mut self.white, &mut self.idx, length, self.width),
+            LightGray => Self::process(&mut self.l_gray, &mut self.idx, length, self.width),
+            DarkGray => Self::process(&mut self.d_gray, &mut self.idx, length, self.width),
+            Black => Self::process(&mut self.black, &mut self.idx, length, self.width),
+            Transparent => {self.idx = self.pixel_count().min(self.idx + length);},
         };
         Ok(())
     }
@@ -169,9 +173,9 @@ impl DecodedImage {
     /// Processes consumes itself into an RGBA image
     /// of [ColorType](color::ColorType)
     pub fn into_color(self, colormap: &ColorMap) -> Vec<u8> {
-        let mut bitmap = Vec::with_capacity(std::mem::size_of::<color::ColorType>() * self.capacity());
+        let mut bitmap = Vec::with_capacity(std::mem::size_of::<color::ColorType>() * self.pixel_count());
 
-        for idx in 0..self.capacity() {
+        for idx in 0..self.pixel_count() {
             bitmap.extend_from_slice(&colormap.map(self.get_color_at(idx)));
         }
         
@@ -181,25 +185,108 @@ impl DecodedImage {
     fn get_color_at(&self, idx: usize) -> ColorList {
         use ColorList::*;
 
-        if let Some(true) = self.black.get(idx) {
+        let (idx, mask) = self.get_idx_and_mask(idx);
+
+        if self.black.get(idx).unwrap_or(&0) & mask != 0 {
             return Black;
         }
-        if let Some(true) = self.d_gray.get(idx) {
+        if self.d_gray.get(idx).unwrap_or(&0) & mask != 0 {
             return DarkGray;
         }
-        if let Some(true) = self.l_gray.get(idx) {
+        if self.l_gray.get(idx).unwrap_or(&0) & mask != 0 {
             return LightGray;
         }
-        if let Some(true) = self.white.get(idx) {
+        if self.white.get(idx).unwrap_or(&0) & mask != 0 {
             return White;
         }
         Transparent
     }
 
-    fn process(arr: &mut [bool], start: &mut usize, length: usize) {
-        arr.iter_mut().skip(*start).take(length)
-            .for_each(|pixel| *pixel = true);
-        *start = arr.len().min(*start + length);
+    /// Will set the corresponding bits to true (`0b1`) starting at pixel position `start` for
+    /// `length` bits.
+    fn process(arr: &mut [PotraceWord], start: &mut usize, mut length: usize, width: usize) {
+        const BITS_PER_WORD: usize = PotraceWord::BITS as usize;
+        let words_per_scanline = (width + BITS_PER_WORD - 1) / BITS_PER_WORD;
+        let (mut x, y) = (*start % width, *start / width);
+        // Update the start for before consuming length
+        *start = (*start + length).min(BITS_PER_WORD * arr.len());
+
+        // Calculate the index into `map_slice` for the current pixel.
+        let mut word_idx = y * words_per_scanline + (x / BITS_PER_WORD);
+
+        // Calculate the bit index within the word for the current pixel.
+        let mut bit_idx = x % BITS_PER_WORD;
+
+        // Need to move to next
+        if x + (BITS_PER_WORD - bit_idx).min(length) >= width || length > BITS_PER_WORD - bit_idx {
+            // If length is greater than the current distance till the end
+            // of the word
+            let trailing_bits = BITS_PER_WORD - 1 - bit_idx;
+            let new_x = x + trailing_bits;
+            length -= if new_x > width {
+                x = 0;
+                width - x
+            } else {
+                x = new_x;
+                trailing_bits
+            };
+
+            arr[word_idx] |= (1 << trailing_bits) - 1;
+            word_idx += 1;
+            bit_idx = 0;
+        }
+
+        while length > BITS_PER_WORD {
+            arr[word_idx] = PotraceWord::MAX;
+            word_idx += 1;
+
+            // Reduce length & update x
+            let new_x = x + BITS_PER_WORD;
+            length -= if new_x > width {
+                x = 0;
+                width - 1 - x
+            } else {
+                x = new_x;
+                BITS_PER_WORD
+            };
+        }
+
+        if length > 0 {
+            if bit_idx == 0 {
+                // Add leading bits
+                arr[word_idx] |= PotraceWord::MAX << (BITS_PER_WORD - length);
+            } else if bit_idx + length > BITS_PER_WORD {
+                let trailing_bits = BITS_PER_WORD - 1 - bit_idx;
+                arr[word_idx] |= (1 << trailing_bits) - 1;
+                word_idx += 1;
+                for rem in 0..(length - trailing_bits) {
+                    arr[word_idx] |= Self::get_mask(rem);
+                }
+            } else {
+                for rem in bit_idx..(bit_idx + length) {
+                    arr[word_idx] |= Self::get_mask(rem);
+                }
+            }
+        }
+    }
+
+    fn get_idx_and_mask(&self, idx: usize) -> (usize, PotraceWord) {
+        let bits_per_word = PotraceWord::BITS as usize;
+        let words_per_scanline = (self.width + bits_per_word - 1) / bits_per_word;
+        let (x, y) = (idx % self.width, idx / self.width);
+
+        // Calculate the index into `map_slice` for the current pixel.
+        let word_idx = y * words_per_scanline + x / bits_per_word;
+
+        // Calculate the bit index within the word for the current pixel.
+        let bit_idx = x % bits_per_word;
+
+        (word_idx, Self::get_mask(bit_idx))
+    }
+
+    fn get_mask(rem: usize) -> PotraceWord {
+        // 1 << rem
+        1 << (PotraceWord::BITS as usize - 1 - rem)
     }
 
     pub fn len(&self) -> usize {
@@ -207,31 +294,25 @@ impl DecodedImage {
     }
 
     pub fn is_full(&self) -> bool {
-        self.idx == self.capacity()
+        self.idx == self.pixel_count()
     }
 
-    pub const fn capacity(&self) -> usize {
-        self.capacity
+    pub const fn pixel_count(&self) -> usize {
+        self.pixel_count
     }
 }
 
 impl Default for DecodedImage {
     fn default() -> Self {
-        Self {
-            idx: 0,
-            capacity: Self::DEFAULT_CAPACITY,
-            white: vec![false; Self::DEFAULT_CAPACITY],
-            l_gray: vec![false; Self::DEFAULT_CAPACITY],
-            d_gray: vec![false; Self::DEFAULT_CAPACITY],
-            black: vec![false; Self::DEFAULT_CAPACITY],
-        }
+        use crate::common::f_fmt;
+        Self::new(f_fmt::PAGE_WIDTH, f_fmt::PAGE_HEIGHT)
     }
 }
 
 impl std::ops::AddAssign for DecodedImage {
     fn add_assign(&mut self, rhs: Self) {
-        self.idx = self.idx.max(rhs.idx).min(self.capacity);
-        for idx in 0..self.idx {
+        self.idx = self.idx.max(rhs.idx).min(self.pixel_count);
+        for idx in 0..self.white.len() {
             self.white[idx] |= rhs.white[idx];
             self.l_gray[idx] |= rhs.l_gray[idx];
             self.d_gray[idx] |= rhs.d_gray[idx];
