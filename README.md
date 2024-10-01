@@ -11,8 +11,8 @@ This project is a Rust-based GUI application designed to work with Supernote A5X
 - **Link Support**: Add support for clickable links within the exported files.
 - **File Merge**: Merge multiple files into a single PDF with working inter-file links.
 - **Color Remap**: Change from grayscale to colorfull images. Right now it only has default remaping:
- - Light Gray goes to yellow (`#fdfa75`)
- - Dark Gray goes to blue (`#4669d6`)
+  - Light Gray goes to yellow (`#fdfa75`)
+  - Dark Gray goes to blue (`#4669d6`)
 - **Optimized for MacOS (Apple Silicon)**: Built and optimized for machines running on Apple Silicon chips.
 
 ## Requirements
