@@ -358,13 +358,12 @@ impl Notebook {
     pub fn from_file(file: &mut File, name: String) -> Result<Self, Box<dyn Error>> {
         let metadata = Metadata::from_file(file)?;
         let file_id = metadata.file_id.clone();
-        let mut titles = Title::get_vec_from_meta(&metadata, file)?;
+        let titles = HashMap::from_iter(
+            Title::get_vec_from_meta(&metadata, file)?.into_iter()
+            .map(|t| (t.content_hash, t))
+        );
         let links = Link::get_vec_from_meta(&metadata);
         let mut pages = Page::get_vec_from_meta(&metadata.pages, file);
-        titles.sort_by(|a, other| match a.page_index == other.page_index  {
-                true => a.position.cmp(&other.position),
-                false => a.page_index.cmp(&other.page_index),
-            });
         pages.sort_by_key(|p| p.page_num);
 
         let page_id_map = HashMap::from_iter(pages.iter().map(|page| (page.page_id.clone(), page.page_num - 1)));

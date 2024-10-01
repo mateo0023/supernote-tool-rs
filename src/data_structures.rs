@@ -40,7 +40,7 @@ pub struct Notebook {
     /// 
     /// Titles will be sorted by Page and then Position
     /// to facilitate Bookmark Generation
-    pub titles: Vec<Title>,
+    pub titles: HashMap<u64, Title>,
     /// A list containing all the [Links](Link)
     pub links: Vec<Link>,
     /// A list containing all the [Pages](Page)
@@ -56,7 +56,7 @@ pub struct Notebook {
     pub starting_page: usize,
 }
 
-#[derive(Debug, Serialize, Default)]
+#[derive(Debug, Serialize, Default, std::cmp::Eq)]
 pub struct Title {
     /// The encoded content of the Title.
     /// 
@@ -154,16 +154,21 @@ fn hash(content: &[u8]) -> u64 {
 // ###########################################################################################################
 
 impl Notebook {
-    /// Update the title's name field given the index it had.
+    /// Update the title's name field given its hash value.
     /// 
     /// Will set it to none if empty.
-    pub fn update_title_at_idx(&mut self, title_idx: usize, new_title: &str) {
-        if let Some(title) = self.titles.get_mut(title_idx) {
-            title.name = match new_title.is_empty() {
-                true => None,
-                false => Some(new_title.to_string()),
-            };
+    pub fn update_title(&mut self, title_hash: u64, new_title: Option<&str>) {
+        if let Some(title) = self.titles.get_mut(&title_hash) {
+            if let Some(new) = new_title {
+                title.name = Some(new.to_string());
+            }
         }
+    }
+
+    pub fn get_sorted_titles(&self) -> Vec<&Title> {
+        let mut titles: Vec<&Title> = self.titles.values().collect();
+        titles.sort();
+        titles
     }
 
     /// Gets the page_id corresponding to the page at internal `index`
@@ -293,6 +298,27 @@ impl Title {
     /// Will default to an empty string.
     pub fn get_name(&self) -> String {
         self.name.clone().unwrap_or_default()
+    }
+}
+
+impl std::cmp::PartialEq for Title {
+    fn eq(&self, other: &Self) -> bool {
+        self.content_hash == other.content_hash
+    }
+}
+
+impl std::cmp::Ord for Title {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        match self.page_index == other.page_index  {
+            true => self.position.cmp(&other.position),
+            false => self.page_index.cmp(&other.page_index),
+        }
+    }
+}
+
+impl std::cmp::PartialOrd for Title {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
     }
 }
 

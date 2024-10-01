@@ -62,7 +62,7 @@ pub fn export_multiple(notebooks: &[&Notebook], colormap: &ColorMap) -> Result<D
     let mut titles = vec![];
     for notebook in notebooks.iter() {
         titles.push(Title::new_for_file(&notebook.file_name, notebook.starting_page));
-        titles.extend(notebook.titles.iter().map(|t| t.basic_for_toc(notebook.starting_page)));
+        titles.extend(notebook.get_sorted_titles().into_iter().map(|t| t.basic_for_toc(notebook.starting_page)));
     }
     // Add the table of contents to the document
     add_toc(&mut doc, &titles, &pages, catalog_id).map_err(|e| e.to_string())?;
@@ -121,7 +121,12 @@ fn to_pdf(notebook: &Notebook, colormap: &ColorMap) -> Result<Document, Box<dyn 
     }
 
     // Add the table of contents to the document
-    add_toc(&mut doc, &notebook.titles, &pages, catalog_id)?;
+    add_toc(
+        &mut doc, 
+        &notebook.get_sorted_titles().into_iter()
+            .map(|t| t.basic_for_toc(0)).collect::<Vec<_>>(),
+        &pages, catalog_id
+    )?;
 
     let page_count = pages.len();
 
