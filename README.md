@@ -1,6 +1,6 @@
 # Supernote Exporter Tool (GUI)
 
-This project is a Rust-based GUI application designed to work with Supernote A5X files. It provides a streamlined way to render and export Supernote files, adding features such as a Table of Contents (ToC) and link support. Additionally, it converts bitmap traces into vector graphics for smoother rendering and exporting. The project builds upon the foundational work of [jya-dev's supernote-tool](https://github.com/jya-dev/supernote-tool) and is open for personal and community use.
+This project is a Rust-based GUI application designed to work with Supernote A5X files. It provides a streamlined way to render and export Supernote files, adding features such as a Table of Contents (ToC) and link support. Additionally, it converts bitmap traces into vector graphics for smoother rendering and exporting. The project builds upon the foundational work of [jya-dev's supernote-tool](https://github.com/jya-dev/supernote-tool) while delivering a notable speed improvement (over 10x).
 
 ## Features
 
