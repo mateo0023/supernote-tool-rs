@@ -529,7 +529,7 @@ impl AppCache {
 
     pub fn save_to(&self, path: Option<&PathBuf>) -> Result<(), Box<dyn Error>> {
         let f = std::fs::File::create(path.unwrap_or(&PathBuf::from(SETTINGS_PATH)))?;
-        serde_json::to_writer_pretty(f, self)?;
+        serde_json::to_writer(f, self)?;
         Ok(())
     }
 }

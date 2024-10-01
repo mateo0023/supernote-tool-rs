@@ -87,7 +87,7 @@ pub fn export_multiple(notebooks: &[&Notebook], colormap: &ColorMap) -> Result<D
     // the remainder of the trailer is set during `doc.save()`.
     doc.trailer.set("Root", catalog_id);
 
-    // pdf.compress();
+    doc.compress();
 
     Ok(doc)
 }
@@ -148,7 +148,7 @@ fn to_pdf(notebook: &Notebook, colormap: &ColorMap) -> Result<Document, Box<dyn 
     // the remainder of the trailer is set during `doc.save()`.
     doc.trailer.set("Root", catalog_id);
 
-    // pdf.compress();
+    doc.compress();
 
     Ok(doc)
 }
