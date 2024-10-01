@@ -37,12 +37,9 @@ pub struct Footer {
     /// It includes addresses for the metadata for:
     /// * The [Header](Metadata::header)
     /// * The [pages](PageMeta)' metadata
-    /// * [Keywords](Footer::keywords)
     /// * [Titles](Footer::titles)
     /// * [Links](Footer::links)
     pub main: MetaMap,
-    /// If there are any addresses for keywords it will contain a vector with their [MetaMap]
-    pub keywords: Option<Vec<MetaMap>>,
     /// If there are any addresses for Titles it will contain a vector with their [MetaMap]
     pub titles: Option<Vec<MetaMap>>,
     /// If there are any addresses for Links it will contain a vector with their [MetaMap]
@@ -59,8 +56,8 @@ pub struct Footer {
 // ###########################################################################################################
 
 impl Footer {
-    pub fn new(f: MetaMap, keywords: Option<Vec<MetaMap>>, titles: Option<Vec<MetaMap>>, links: Option<Vec<MetaMap>>) -> Self {
-        Footer { main: f, keywords, titles, links }
+    pub fn new(f: MetaMap, titles: Option<Vec<MetaMap>>, links: Option<Vec<MetaMap>>) -> Self {
+        Footer { main: f, titles, links }
     }
 
     /// Simply calls `get` on the [Footer::main], see [MetaMap]

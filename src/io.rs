@@ -33,7 +33,6 @@ pub mod f_fmt {
     
     /// The possible Keywords in the `.note` file that are used for metadata.
     pub enum MKeyword {
-        Keyword,
         Title,
         Link,
         Page,
@@ -49,7 +48,7 @@ pub mod f_fmt {
     impl MKeyword {
         pub fn as_str(&self) -> &'static str {
             match self {
-                MKeyword::Keyword => "KEYWORD_",
+                // MKeyword::Keyword => "KEYWORD_",
                 MKeyword::Title => "TITLE_",
                 MKeyword::Link =>  "LINKO_",
                 MKeyword::Page =>  "PAGE",
@@ -66,7 +65,6 @@ pub mod f_fmt {
         /// [String]
         pub fn page_number_str(&self, key: &str) -> String {
             match self {
-                MKeyword::Keyword => todo!(),
                 MKeyword::Title
                 | MKeyword::Link => key[6..10].to_string(),
                 MKeyword::Page => key[4..].to_string(),
@@ -296,13 +294,13 @@ impl metadata::Footer {
             None => return Err(io::ErrorKind::InvalidData.into()),
         };
 
-        let keywords_meta = get_all_meta_on_keyword(file, &footer, f_fmt::MKeyword::Keyword);
+        // let keywords_meta = get_all_meta_on_keyword(file, &footer, f_fmt::MKeyword::Keyword);
 
         let titles_meta = get_all_meta_on_keyword(file, &footer, f_fmt::MKeyword::Title);
 
         let links_meta = get_all_meta_on_keyword(file, &footer, f_fmt::MKeyword::Link);
 
-        Ok(metadata::Footer::new(footer, keywords_meta, titles_meta, links_meta))
+        Ok(metadata::Footer::new(footer, titles_meta, links_meta))
     }
 }
 
