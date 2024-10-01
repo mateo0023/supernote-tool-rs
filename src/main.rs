@@ -16,7 +16,14 @@ mod ui;
 
 fn main() {
     let app = ui::MyApp::new();
-    let _ = eframe::run_native("SuperNote Exporter", eframe::NativeOptions::default(), Box::new(|_ctx| {
-        Ok(Box::new(app))
-    }));
+    let _ = eframe::run_native(
+        "SuperNote Exporter",
+        eframe::NativeOptions {
+            viewport: egui::ViewportBuilder { icon: Some(ui::icon::get_icon().into()), ..Default::default()  },
+            ..Default::default()
+        },
+        Box::new(|_ctx| {
+            Ok(Box::new(app))
+        })
+);
 }

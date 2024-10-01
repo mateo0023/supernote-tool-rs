@@ -12,6 +12,8 @@ use crate::error::*;
 use crate::exporter::export_multiple;
 use crate::io::to_file;
 
+pub mod icon;
+
 pub struct MyApp {
     app_cache: AppCache,
     notebooks: Vec<(Notebook, TitleHolder)>,
