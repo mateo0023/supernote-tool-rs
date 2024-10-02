@@ -27,7 +27,7 @@ fn main() {
 fn main() {
     let app = ui::MyApp::new();
     let _ = eframe::run_native(
-        "SuperNote Exporter",
+        "Supernote Tool",
         eframe::NativeOptions {
             viewport: egui::ViewportBuilder { icon: Some(ui::icon::get_icon().into()), ..Default::default()  },
             ..Default::default()
@@ -35,5 +35,5 @@ fn main() {
         Box::new(|_ctx| {
             Ok(Box::new(app))
         })
-);
+    );
 }

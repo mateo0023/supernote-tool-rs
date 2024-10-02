@@ -1,13 +1,13 @@
 [package]
-name = "supernote-tool"
-version = "1.0.0"
+name = "supernote-tool-rs"
+version = "1.0.1"
 edition = "2021"
 cdescription = "A Rust-based GUI application designed to work with Supernote A5X files. It provides a streamlined way to render and export Supernote files to vector PDFs, adding features such as a Table of Contents (ToC) and link support."
 
 [package.metadata.bundle]
 name = "Supernote Tool Rust"
 identifier = "io.github.mateo0023.supernote-tool-rs"
-icon = ["./icons/64x64.png", "./icons/126x126.png", "./icons/256x256@2x.png"]
+icon = ["./icons/64x64.png", "./icons/128x128.png", "./icons/256x256@2x.png"]
 
 [profile.release]
 debug = true
