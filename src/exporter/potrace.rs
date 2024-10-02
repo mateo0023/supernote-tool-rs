@@ -36,10 +36,10 @@ use lopdf::content::Operation;
 use wrapper::{Bitmap, PotraceParams, PotraceState, trace, generate_combined_paths};
 
 struct MultiColorBitmap {
-    white_btmp: Bitmap,
-    l_gray_btmp: Bitmap,
-    d_gray_btmp: Bitmap,
-    black_btmp: Bitmap,
+    white_btmp: Option<Bitmap>,
+    l_gray_btmp: Option<Bitmap>,
+    d_gray_btmp: Option<Bitmap>,
+    black_btmp: Option<Bitmap>,
     white_color: PdfColor,
     l_gray_color: PdfColor,
     d_gray_color: PdfColor,
@@ -67,12 +67,20 @@ impl MultiColorBitmap {
     }
 
     pub fn trace(self, params: &PotraceParams) -> Result<Vec<(PotraceState, PdfColor)>, Box<dyn Error>> {
-        Ok(vec![
-            (trace(&self.white_btmp, params)?, self.white_color),
-            (trace(&self.l_gray_btmp, params)?, self.l_gray_color),
-            (trace(&self.d_gray_btmp, params)?, self.d_gray_color),
-            (trace(&self.black_btmp, params)?, self.black_color),
-        ])
+        let mut traces = Vec::with_capacity(4);
+        if let Some(white_btmp) = self.white_btmp {
+            traces.push((trace(&white_btmp, params)?, self.white_color));
+        }
+        if let Some(l_gray_btmp) = self.l_gray_btmp {
+            traces.push((trace(&l_gray_btmp, params)?, self.l_gray_color));
+        }
+        if let Some(d_gray_btmp) = self.d_gray_btmp {
+            traces.push((trace(&d_gray_btmp, params)?, self.d_gray_color));
+        }
+        if let Some(black_btmp) = self.black_btmp {
+            traces.push((trace(&black_btmp, params)?, self.black_color));
+        }
+        Ok(traces)
     }
 }
 
@@ -84,12 +92,17 @@ impl TryFrom<DecodedImage> for MultiColorBitmap {
     fn try_from(value: DecodedImage) -> Result<Self, Self::Error> {
         use ColorList::*;
 
+        let white_btmp =  if value.used_white  { Some(Bitmap::from_vec(&value.white)?)  } else {None};
+        let l_gray_btmp = if value.used_l_gray { Some(Bitmap::from_vec(&value.l_gray)?) } else {None};
+        let d_gray_btmp = if value.used_d_gray { Some(Bitmap::from_vec(&value.d_gray)?) } else {None};
+        let black_btmp =  if value.used_black  { Some(Bitmap::from_vec(&value.black)?)  } else {None};
+
         let map = ColorMap::default();
         Ok(Self {
-            white_btmp: Bitmap::from_vec(&value.white)?,
-            l_gray_btmp: Bitmap::from_vec(&value.l_gray)?,
-            d_gray_btmp: Bitmap::from_vec(&value.d_gray)?,
-            black_btmp: Bitmap::from_vec(&value.black)?,
+            white_btmp,
+            l_gray_btmp,
+            d_gray_btmp,
+            black_btmp,
             white_color: map.get_f_rgb(White),
             l_gray_color: map.get_f_rgb(LightGray),
             d_gray_color: map.get_f_rgb(DarkGray),

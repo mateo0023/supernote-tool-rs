@@ -24,12 +24,20 @@ pub struct DecodedImage {
     width: usize,
     /// Array of wether pixel at bit is that color
     pub white: Vec<PotraceWord>,
+    /// A boolean whether we've stored in white
+    pub used_white: bool,
     /// Array of wether pixel at bit is that color
     pub l_gray: Vec<PotraceWord>,
+    /// A boolean whether we've stored in l_gray
+    pub used_l_gray: bool,
     /// Array of wether pixel at bit is that color
     pub d_gray: Vec<PotraceWord>,
+    /// A boolean whether we've stored in d_gray
+    pub used_d_gray: bool,
     /// Array of wether pixel at bit is that color
     pub black: Vec<PotraceWord>,
+    /// A boolean whether we've stored in black
+    pub used_black: bool,
 }
 
 #[derive(Debug)]
@@ -151,9 +159,13 @@ impl DecodedImage {
             pixel_count: width * height,
             width,
             white: vec![0; true_capacity],
+            used_white: false,
             l_gray: vec![0; true_capacity],
+            used_l_gray: false,
             d_gray: vec![0; true_capacity],
+            used_d_gray: false,
             black: vec![0; true_capacity],
+            used_black: false,
         }
     }
 
@@ -161,10 +173,22 @@ impl DecodedImage {
     pub fn push(&mut self, colorcode: u8, length: usize) -> Result<(), DecoderError>{
         use color::ColorList::*;
         match color::ColorList::decode(colorcode)? {
-            White => Self::process(&mut self.white, &mut self.idx, length, self.width),
-            LightGray => Self::process(&mut self.l_gray, &mut self.idx, length, self.width),
-            DarkGray => Self::process(&mut self.d_gray, &mut self.idx, length, self.width),
-            Black => Self::process(&mut self.black, &mut self.idx, length, self.width),
+            White => {
+                self.used_white = true;
+                Self::process(&mut self.white, &mut self.idx, length, self.width)
+            },
+            LightGray => {
+                self.used_l_gray = true;
+                Self::process(&mut self.l_gray, &mut self.idx, length, self.width)
+            },
+            DarkGray => {
+                self.used_d_gray = true;
+                Self::process(&mut self.d_gray, &mut self.idx, length, self.width)
+            },
+            Black => {
+                self.used_black = true;
+                Self::process(&mut self.black, &mut self.idx, length, self.width)
+            },
             Transparent => {self.idx = self.pixel_count().min(self.idx + length);},
         };
         Ok(())
@@ -205,10 +229,12 @@ impl DecodedImage {
     /// Will set `length` bits (corresponding with picels) to 1, from index `start`.
     /// 
     /// Also updates `start` to `+= length`
-    fn process(arr: &mut [PotraceWord], start: &mut usize, length: usize, width: usize) {
+    fn process(arr: &mut [PotraceWord], start: &mut usize, mut length: usize, width: usize) {
         let bits_per_word = PotraceWord::BITS as usize;
         let words_per_scanline = (width + bits_per_word - 1) / bits_per_word;
         let (mut x, y) = (*start % width, *start / width);
+
+        *start += length;
 
         // Calculate the index into `map_slice` for the current pixel.
         let mut word_idx = y * words_per_scanline + (x / bits_per_word);
@@ -216,20 +242,37 @@ impl DecodedImage {
         // Calculate the bit index within the word for the current pixel.
         let mut bit_idx = x % bits_per_word;
         
-        for _ in 0..length {
+        let iter_len = length.min(width-x).min(bits_per_word - bit_idx);
+        for _ in 0..iter_len {
             arr[word_idx] |= Self::get_mask(bit_idx);
 
             bit_idx += 1;
-            x += 1;
-            if bit_idx >= bits_per_word || x >= width {
-                word_idx += 1;
-                bit_idx = 0;
-                if x >= width {
-                    x = 0;
-                }
+        }
+        x += iter_len;
+        if bit_idx >= bits_per_word || x >= width {
+            word_idx += 1;
+            bit_idx = 0;
+            if x >= width {
+                x = 0;
             }
         }
-        *start += length;
+        length -= iter_len;
+        
+        while length >= bits_per_word {
+            arr[word_idx] = PotraceWord::MAX;
+            word_idx += 1;
+            if x + bits_per_word >= width {
+                length -= width - x;
+                x = 0;
+            } else {
+                x += bits_per_word;
+                length -= bits_per_word;
+            }
+        }
+
+        for idx in bit_idx..(bit_idx + length) {
+            arr[word_idx] |= Self::get_mask(idx);
+        }
     }
 
     fn get_idx_and_mask(&self, idx: usize) -> (usize, PotraceWord) {
