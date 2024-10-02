@@ -202,72 +202,34 @@ impl DecodedImage {
         Transparent
     }
 
-    /// Will set the corresponding bits to true (`0b1`) starting at pixel position `start` for
-    /// `length` bits.
-    fn process(arr: &mut [PotraceWord], start: &mut usize, mut length: usize, width: usize) {
-        const BITS_PER_WORD: usize = PotraceWord::BITS as usize;
-        let words_per_scanline = (width + BITS_PER_WORD - 1) / BITS_PER_WORD;
+    /// Will set `length` bits (corresponding with picels) to 1, from index `start`.
+    /// 
+    /// Also updates `start` to `+= length`
+    fn process(arr: &mut [PotraceWord], start: &mut usize, length: usize, width: usize) {
+        let bits_per_word = PotraceWord::BITS as usize;
+        let words_per_scanline = (width + bits_per_word - 1) / bits_per_word;
         let (mut x, y) = (*start % width, *start / width);
-        // Update the start for before consuming length
-        *start = (*start + length).min(BITS_PER_WORD * arr.len());
 
         // Calculate the index into `map_slice` for the current pixel.
-        let mut word_idx = y * words_per_scanline + (x / BITS_PER_WORD);
+        let mut word_idx = y * words_per_scanline + (x / bits_per_word);
 
         // Calculate the bit index within the word for the current pixel.
-        let mut bit_idx = x % BITS_PER_WORD;
+        let mut bit_idx = x % bits_per_word;
+        
+        for _ in 0..length {
+            arr[word_idx] |= Self::get_mask(bit_idx);
 
-        // Need to move to next
-        if x + (BITS_PER_WORD - bit_idx).min(length) >= width || length > BITS_PER_WORD - bit_idx {
-            // If length is greater than the current distance till the end
-            // of the word
-            let trailing_bits = BITS_PER_WORD - 1 - bit_idx;
-            let new_x = x + trailing_bits;
-            length -= if new_x > width {
-                x = 0;
-                width - x
-            } else {
-                x = new_x;
-                trailing_bits
-            };
-
-            arr[word_idx] |= (1 << trailing_bits) - 1;
-            word_idx += 1;
-            bit_idx = 0;
-        }
-
-        while length > BITS_PER_WORD {
-            arr[word_idx] = PotraceWord::MAX;
-            word_idx += 1;
-
-            // Reduce length & update x
-            let new_x = x + BITS_PER_WORD;
-            length -= if new_x > width {
-                x = 0;
-                width - 1 - x
-            } else {
-                x = new_x;
-                BITS_PER_WORD
-            };
-        }
-
-        if length > 0 {
-            if bit_idx == 0 {
-                // Add leading bits
-                arr[word_idx] |= PotraceWord::MAX << (BITS_PER_WORD - length);
-            } else if bit_idx + length > BITS_PER_WORD {
-                let trailing_bits = BITS_PER_WORD - 1 - bit_idx;
-                arr[word_idx] |= (1 << trailing_bits) - 1;
+            bit_idx += 1;
+            x += 1;
+            if bit_idx >= bits_per_word || x >= width {
                 word_idx += 1;
-                for rem in 0..(length - trailing_bits) {
-                    arr[word_idx] |= Self::get_mask(rem);
-                }
-            } else {
-                for rem in bit_idx..(bit_idx + length) {
-                    arr[word_idx] |= Self::get_mask(rem);
+                bit_idx = 0;
+                if x >= width {
+                    x = 0;
                 }
             }
         }
+        *start += length;
     }
 
     fn get_idx_and_mask(&self, idx: usize) -> (usize, PotraceWord) {
