@@ -317,6 +317,10 @@ impl Default for DecodedImage {
 impl std::ops::AddAssign for DecodedImage {
     fn add_assign(&mut self, rhs: Self) {
         self.idx = self.idx.max(rhs.idx).min(self.pixel_count);
+        self.used_white |= rhs.used_white;
+        self.used_l_gray |= rhs.used_l_gray;
+        self.used_d_gray |= rhs.used_d_gray;
+        self.used_black |= rhs.used_black;
         for idx in 0..self.white.len() {
             self.white[idx] |= rhs.white[idx];
             self.l_gray[idx] |= rhs.l_gray[idx];
