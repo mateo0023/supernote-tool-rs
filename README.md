@@ -45,13 +45,19 @@ This project is a Rust-based GUI application designed to work with Supernote A5X
 
 ## Usage
 
-Launch the application by running the following command:
+Either download your binary from the Releases page or launch the application by running the following command:
 
 ```bash
 cargo run --release
 ```
 
 The graphical interface will open, allowing you to load Supernote A5X files and configure export settings, such as adding a ToC or enabling clickable links in the output.
+
+## GUI Features
+
+- **File Import**: Load your `.note` files from Supernote devices.
+- **Export Options**: Choose between exporting various PDF files or merge.
+- **ToC**: Easily edit the Table of Contents with the pre-rendered titles.
 
 ### Title Implementation
 
@@ -61,15 +67,9 @@ The titles are automatically grouped in the following way:
 
 However, there's no Optical Character Recognition (OCR) so they are first loaded with empty text fields. You can manually edit them and even save/load those title transcriptions with the Load/Save Cache buttons. When exporting, these settings will be automatically saved to the last selected settings file.
 
-## GUI Features
-
-- **File Import**: Load your `.note` files from Supernote devices.
-- **Export Options**: Choose between exporting various PDF files or merge.
-- **ToC**: Easily edit the Table of Contents with the pre-rendered titles.
-
 ## Contributions
 
-Contributions are welcome! Feel free to open issues for bugs, feature requests, or submit pull requests. Check out `CONTRIBUTING.md` for more details on how to contribute.
+Contributions are welcome! Feel free to open issues for bugs, feature requests, or submit pull requests.
 
 ## Acknowledgments
 
