@@ -90,9 +90,9 @@ pub struct Link {
 }
 #[derive(Debug, Serialize)]
 pub struct Page {
-    pub totalpath: Option<Vec<u8>>,
-    pub recogn_file: Option<Vec<u8>>,
-    pub recogn_text: Option<Vec<u8>>,
+    // pub totalpath: Option<Vec<u8>>,
+    // pub recogn_file: Option<Vec<u8>>,
+    // pub recogn_text: Option<Vec<u8>>,
     pub layers: Vec<Layer>,
     pub page_num: usize,
     pub page_id: String,
@@ -382,9 +382,9 @@ impl Page {
     /// Given a [PageMeta](metadata::PageMeta) it returns a [Page].
     pub fn from_meta(metadata: &metadata::PageMeta, file: &mut File) -> Self {
         Page {
-            totalpath: extract_key_and_read(file, &metadata.page_info, "TOTALPATH"),
-            recogn_file: extract_key_and_read(file, &metadata.page_info, "RECOGNFILE"),
-            recogn_text: extract_key_and_read(file, &metadata.page_info, "RECOGNTEXT"),
+            // totalpath: extract_key_and_read(file, &metadata.page_info, "TOTALPATH"),
+            // recogn_file: extract_key_and_read(file, &metadata.page_info, "RECOGNFILE"),
+            // recogn_text: extract_key_and_read(file, &metadata.page_info, "RECOGNTEXT"),
             layers: Layer::get_vec_fom_vec(&metadata.layers, file),
             page_num: metadata.page_info.get("PAGE_NUMBER").unwrap()[0].parse().unwrap(),
             page_id: metadata.page_info.get("PAGEID").unwrap()[0].clone(),

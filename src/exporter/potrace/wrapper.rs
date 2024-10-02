@@ -167,7 +167,8 @@ pub fn generate_combined_paths(
 ) -> Vec<Operation> {
     use lopdf::content::*;
 
-    let mut operations: Vec<Operation> = Vec::new();
+    // There seems to be around 2_500 - 2_600 operations per PotraceState
+    let mut operations: Vec<Operation> = Vec::with_capacity(paths.len() * 2_700); 
 
     for (state, fill_color) in paths {
         unsafe {
