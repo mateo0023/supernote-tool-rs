@@ -168,7 +168,7 @@ pub fn generate_combined_paths(
     use lopdf::content::*;
 
     // There seems to be around 2_500 - 2_600 operations per PotraceState
-    let mut operations: Vec<Operation> = Vec::with_capacity(paths.len() * 2_700); 
+    let mut operations: Vec<Operation> = Vec::with_capacity(estimate_capacity(&paths)); 
 
     for (state, fill_color) in paths {
         unsafe {
@@ -187,7 +187,7 @@ pub fn generate_combined_paths(
     
                     // Should already contain + and - loops in their corresponding
                     // order. This could be a possible issue if assumed wrong.
-                    operations.extend(process_curve(&curve));
+                    process_curve(&curve, &mut operations);
     
                     path = (*path).next;
                 }
@@ -202,15 +202,45 @@ pub fn generate_combined_paths(
     operations
 }
 
-/// Generates the [Operation]s for the given curve
-unsafe fn process_curve(curve: &potrace_curve_s) -> Vec<Operation> {
+/// Will compute the estimated number of Operations needed.
+/// Will loop over the [PotraceState] and their `paths`.
+/// 
+/// Assumes paths are generally curved, with only 5% of
+/// the paths being starights. This should reduce the
+/// amount of memory allocations.
+fn estimate_capacity(paths: &[(PotraceState, PdfColor)]) -> usize {
+    let mut accum = 1;
+    for (state, _) in paths.iter() {
+        unsafe {
+            let mut path = (*state.state).plist;
+
+            // For setting the path color
+            // and the fill command
+            if !path.is_null() {
+                accum += 2;
+            }
+
+            while !path.is_null() {
+                let curve = (*path).curve;
+                // Assumes mostly curved paths, 5% are starights
+                // We need 2 for Operation for starting and closing the path.
+                accum += (curve.n as f32 * 1.05) as usize + 2;
+
+                path = (*path).next;
+            }
+        }
+    }
+
+    accum
+}
+
+/// Generates the [Operation]s for the given curve and pushes them to `operations`.
+unsafe fn process_curve(curve: &potrace_curve_s, operations: &mut Vec<Operation>) {
     const Y: f64 = f_fmt::PAGE_HEIGHT as f64;
 
     if curve.n == 0 {
-        return vec![];
+        return;
     }
-
-    let mut operations = Vec::new();
 
     // Get the number of segments
     let n = curve.n as usize;
@@ -244,9 +274,11 @@ unsafe fn process_curve(curve: &potrace_curve_s) -> Vec<Operation> {
                 let c3 = c_array[2];
 
                 // Push the Bezier Curve
-                operations.push(Operation::new("c", [
-                    c1.x, (Y - c1.y), c2.x, (Y - c2.y), c3.x, (Y - c3.y)
-                ].into_iter().map(|it| it.into()).collect()));
+                operations.push(Operation::new("c", vec![
+                    c1.x.into(), (Y - c1.y).into(),
+                    c2.x.into(), (Y - c2.y).into(),
+                    c3.x.into(), (Y - c3.y).into()
+                ]));
             }
             _ => {}
         }
@@ -254,6 +286,4 @@ unsafe fn process_curve(curve: &potrace_curve_s) -> Vec<Operation> {
 
     // Close the curve ("subpath" in PDF terms)
     operations.push(Operation::new("h", vec![]));
-
-    operations
 }
