@@ -11,6 +11,7 @@ const A4_HEIGHT: i32 = crate::common::f_fmt::PAGE_HEIGHT as i32;
 mod potrace;
 
 pub use potrace::Word as PotraceWord;
+pub use potrace::PotraceError;
 
 use lopdf::content::Content;
 use lopdf::{dictionary, Document, Object, ObjectId, Stream};
