@@ -252,6 +252,8 @@ fn add_toc(doc: &mut Document, titles: &[Title], page_ids: &[ObjectId], catalog_
         title_id_stack.push_back((new_id, title.title_level));
     }
 
+    println!();
+
     if let Some(Object::Dictionary(ref mut outlines_dict)) = doc.objects.get_mut(&outlines_id) {
         // Ensure /First and /Last are set
         if !outlines_dict.has(b"First") {

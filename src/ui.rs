@@ -164,7 +164,7 @@ impl MyApp {
             for (&k, cache) in title_cache {
                 notebook.update_title(k, cache.title.as_deref());
             }
-            holder.update_editor(notebook);
+            holder.update_editor(notebook, title_cache);
         }
     }
 
@@ -172,8 +172,7 @@ impl MyApp {
     fn update_note_from_holder(&mut self) {
         for (notebook, holder) in self.notebooks.iter_mut() {
             for title in holder.titles.iter() {
-                let (hash, name) = title.get_data();
-                notebook.update_title(hash, name);
+                title.update_notebook(notebook);
             }
         }
     }
@@ -258,7 +257,19 @@ impl eframe::App for MyApp {
                     }
     
                     if ui.button("Save Cache").clicked() {
-                        if let Some(out_path) = FileDialog::new().add_filter("JSON", &["json"]).save_file() {
+                        let file_dialog = match &self.settings_path {
+                            Some(path) => {
+                                let base_dialog = FileDialog::new().add_filter("JSON", &["json"]);
+                                match (path.parent(), path.file_name()) {
+                                    (None, None) => base_dialog,
+                                    (None, Some(file_name)) => base_dialog.set_file_name(file_name.to_str().unwrap()),
+                                    (Some(path), None) => base_dialog.set_directory(path),
+                                    (Some(path), Some(file_name)) => base_dialog.set_directory(path).set_file_name(file_name.to_str().unwrap()),
+                                }
+                            },
+                            None => FileDialog::new().add_filter("JSON", &["json"]),
+                        };
+                        if let Some(out_path) = file_dialog.save_file() {
                             self.update_cache();
                             if let Err(e) = self.app_cache.save_to(&out_path) {
                                 self.add_err(e);
@@ -353,11 +364,12 @@ impl TitleHolder {
             .for_each(|(title, lvl)| self.add_title(title, lvl));
     }
 
-    pub fn update_editor(&mut self, notebook: &Notebook) {
+    pub fn update_editor(&mut self, notebook: &Notebook, cache: &HashMap<u64, TitleCache>) {
         let mut new_titles = notebook.get_sorted_titles().into_iter();
         for title in &mut self.titles {
             title.visit_mut(&mut |node| if let Some(Title {name: Some(title), ..}) = new_titles.next() {
                 node.title.clone_from(title);
+                node.was_edited = cache.contains_key(&node.hash)
             });
         }
     }
@@ -443,6 +455,17 @@ impl TitleEditor {
                 Some(cache) => vec![cache],
                 None => vec![],
             },
+        }
+    }
+
+    /// Update the contents of [self] to the given [Notebook].
+    pub fn update_notebook(&self, notebook: &mut Notebook) {
+        let (hash, name) = self.get_data();
+        notebook.update_title(hash, name);
+        if let Some(ch) = &self.children {
+            ch.iter().for_each(|title| {
+                title.update_notebook(notebook)
+            });
         }
     }
 
