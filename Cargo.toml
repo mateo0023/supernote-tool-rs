@@ -9,12 +9,16 @@ name = "Supernote Tool Rust"
 identifier = "io.github.mateo0023.supernote-tool-rs"
 icon = ["./icons/64x64.png", "./icons/128x128.png", "./icons/256x256@2x.png"]
 
+[[bench]]
+name = "library_benchmark"
+harness = false
+
+[profile.bench]
+debug = true
+strip = false
+
 [profile.release]
 debug = true
-
-[features]
-default = []      # Optional: Define default features
-test_mode = []    # Define the 'test_mode' feature
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
