@@ -15,6 +15,9 @@ pub mod error {
 }
 
 mod ui;
+pub use io::load;
+pub use data_structures::Notebook;
+pub use decoder::ColorMap;
 
 /// Test the big file (`"./test/01. Asset Allocation.pdf"`).
 pub fn big_test() {
