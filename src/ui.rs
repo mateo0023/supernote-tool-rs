@@ -32,12 +32,12 @@ struct TitleHolder {
     titles: Vec<TitleEditor>,
 }
 
-#[derive(Default)]
+// #[derive(Default)]
 pub struct TitleEditor {
     title: String,
     persis_id: Option<egui::Id>,
     img_texture: Option<egui::TextureHandle>,
-    level: i32,
+    level: TitleLevel,
     children: Option<Vec<TitleEditor>>,
     /// The hash value of the content (encoded).
     hash: u64,
@@ -68,6 +68,8 @@ pub struct TitleCache {
     page_id: String,
     /// The hash value of the [content](Title::content).
     hash: u64,
+    #[serde(default)]
+    has_content: bool,
 }
 
 /// Loads the as a texture with the given context and returns the [TextureHandle](egui::TextureHandle)
@@ -97,6 +99,11 @@ impl MyApp {
         self.out_err.get_or_insert(vec![]).push(e);
     }
 
+    /// Adds a notebook to the app.
+    /// It will:
+    /// 1. Update the cache & notebook (see [AppCache::load_or_add]).
+    /// 2. Create the [title editors](TitleHolder).
+    /// 3. Shift the pages of the notebooks, in case of merge when exporting.
     pub fn add_notebook(&mut self, mut notebook: Notebook, ctx: &egui::Context) -> Result<(), Box<dyn Error>> {
         self.app_cache.load_or_add(&mut notebook)?;
         let new_titles = TitleHolder::from_notebook(&notebook, ctx);
@@ -147,13 +154,16 @@ impl MyApp {
     }
 
     /// Updates the [Self::notebooks] (the [Notebook] and [TitleHolder])
+    /// from [Self::app_cache].
+    /// 
+    /// Should be called only after loading new [cache](AppCache).
     fn update_from_cache(&mut self) {
         for (notebook, holder) in self.notebooks.iter_mut() {
             let title_cache = self.app_cache.notebooks.get(&notebook.file_id).unwrap();
             for (&k, cache) in title_cache {
                 notebook.update_title(k, cache.title.as_deref());
             }
-            holder.update_editor(notebook);
+            holder.update_editor(notebook, );
         }
     }
 
@@ -331,6 +341,7 @@ impl TitleHolder {
         titles
     }
 
+    /// Creates the [TitleHolder]s from the given [Notebook].
     fn create_editors(&mut self, notebook: &Notebook, ctx: &egui::Context) {
         notebook.get_sorted_titles().into_iter()
             .filter_map(|title| {
@@ -360,10 +371,10 @@ impl TitleHolder {
             self.titles.push(title);
         } else {
             match self.titles.last_mut() {
-                Some(t) => t.add_child(title, lvl),
+                Some(t) => t.add_child(title),
                 None => {
-                    let mut t = TitleEditor::default();
-                    t.add_child(title, lvl);
+                    let mut t = TitleEditor::create_blank(&title.page_id, TitleLevel::default());
+                    t.add_child(title);
                     self.titles.push(t);
                 },
             }
@@ -379,11 +390,31 @@ impl TitleEditor {
             title: title.get_name(),
             persis_id: None,
             img_texture: Some(texture),
-            level: title.title_level.into(),
+            level: title.title_level,
             children: None,
             hash: title.content_hash,
             page_id: page_id.to_string(),
         })
+    }
+
+    /// Creates a blank title with [Self::level] as `level` and creates a child.
+    pub fn create_blank(page_id: &str, level: TitleLevel) -> Self {
+        use std::hash::{DefaultHasher, Hasher as _};
+    
+    // todo!();
+        let mut hasher = DefaultHasher::new();
+        hasher.write(page_id.as_bytes());
+        hasher.write(&[level as u8]);
+        let hash = hasher.finish();
+        Self {
+            title: String::new(),
+            persis_id: None,
+            img_texture: None,
+            level,
+            children: None,
+            hash,
+            page_id: page_id.to_string(),
+        }
     }
 
     /// Get's the data needed for the [Title] to
@@ -399,16 +430,16 @@ impl TitleEditor {
         (self.hash, title)
     }
 
-    pub fn add_child(&mut self, title: TitleEditor, lvl: TitleLevel) {
-        if self.level + 1 == Into::<i32>::into(lvl) {
+    pub fn add_child(&mut self, title: TitleEditor) {
+        if self.level.add() == title.level {
             // Reached the correct level
             let ch = self.children.get_or_insert(vec![]);
             ch.push(title);
         } else {
             // Need to go one level down
             // Create a default (empty title)
-            let ch = self.children.get_or_insert(vec![TitleEditor::default()]);
-            ch.last_mut().unwrap().add_child(title, lvl);
+            let ch = self.children.get_or_insert(vec![TitleEditor::create_blank(&title.page_id, self.level.add())]);
+            ch.last_mut().unwrap().add_child(title);
         }
     }
 
@@ -431,6 +462,7 @@ impl TitleEditor {
             },
             page_id: self.page_id.clone(),
             hash: self.hash,
+            has_content: self.img_texture.is_some(),
         }
     }
 
@@ -529,6 +561,8 @@ impl AppCache {
                         notebook.update_title(k, c.title.as_deref());
                         // * Update the new cache
                         c_title.title = c.title;
+                    } else if !c.has_content && c.title.is_some() {
+                        cache.insert(k, c);
                     }
                 }
             },
@@ -570,6 +604,7 @@ impl TitleCache {
             title: title.name.clone(),
             page_id,
             hash: title.content_hash,
+            has_content: true,
         })
     }
 

@@ -117,6 +117,7 @@ pub enum LinkType {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Default, Hash, std::cmp::PartialEq, std::cmp::Eq, std::cmp::PartialOrd, std::cmp::Ord)]
+#[repr(u8)]
 pub enum TitleLevel {
     FileLevel,
     #[default]
@@ -463,6 +464,17 @@ impl TitleLevel {
             Self::Stripped
         } else {
             Self::default()
+        }
+    }
+
+    pub fn add(&self) -> Self {
+        use TitleLevel::*;
+        match self {
+            FileLevel => BlackBack,
+            BlackBack => LightGray,
+            LightGray => DarkGray,
+            DarkGray => Stripped,
+            Stripped => Stripped,
         }
     }
 }
