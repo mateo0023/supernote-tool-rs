@@ -356,15 +356,35 @@ impl Notebook {
     pub fn from_file(file: &mut File, name: String) -> Result<Self, Box<dyn Error>> {
         let metadata = Metadata::from_file(file)?;
         let file_id = metadata.file_id.clone();
-        let titles = HashMap::from_iter(
-            Title::get_vec_from_meta(&metadata, file)?.into_iter()
-            .map(|t| (t.content_hash, t))
-        );
         let links = Link::get_vec_from_meta(&metadata);
         let mut pages = Page::get_vec_from_meta(&metadata.pages, file);
         pages.sort_by_key(|p| p.page_num);
 
         let page_id_map = HashMap::from_iter(pages.iter().map(|page| (page.page_id.clone(), page.page_num - 1)));
+
+        let titles = {
+            let mut titles = Title::get_vec_from_meta(&metadata, file)?;
+            titles.sort();
+
+            let mut ghost_titles = vec![];
+            let mut prev_level = TitleLevel::FileLevel;
+            for t in titles.iter() {
+                let page_id = &pages[t.page_index].page_id;
+
+                while (prev_level as u8) + 1 < t.title_level as u8 {
+                    prev_level = prev_level.add();
+                    let title = Title::new_ghost(prev_level, t, page_id);
+                    ghost_titles.push(title);
+                }
+                prev_level = t.title_level;
+            }
+            titles.extend(ghost_titles);
+
+            HashMap::from_iter(
+                titles.into_iter()
+                .map(|t| (t.hash, t))
+            )
+        };
 
         Ok(Notebook {
             file_id,

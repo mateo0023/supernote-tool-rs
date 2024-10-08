@@ -61,9 +61,12 @@ pub struct Title {
     /// The encoded content of the Title.
     /// 
     /// To be decoded into a Bitmap
-    pub content: Vec<u8>,
-    /// The hash of [Self::content]
-    pub content_hash: u64,
+    pub content: Option<Vec<u8>>,
+    /// The hash of [Self::content], if any.
+    /// Otherwise it will be a hash of the:
+    /// 1. `page_id`, and
+    /// 2. [Self::title_level]
+    pub hash: u64,
     /// Essentially the type of title
     /// 
     /// [TitleLevel] will later be used to determine
@@ -201,6 +204,29 @@ impl Title {
         }
     }
 
+    /// Creates a new *ghost* title.
+    /// 
+    /// These are the titles are the are missing in the tree structure.
+    pub fn new_ghost(title_level: TitleLevel, reference_t: &Title, page_id: &str) -> Self {
+        let hash = {
+            use std::hash::{DefaultHasher, Hasher as _};
+    
+            let mut hasher = DefaultHasher::new();
+            hasher.write(page_id.as_bytes());
+            hasher.write(&[title_level as u8]);
+            hasher.finish()
+        };
+
+        Self {
+            hash,
+            title_level,
+            page_index: reference_t.page_index,
+            position: reference_t.position,
+            coords: reference_t.coords,
+            ..Default::default()
+        }
+    }
+
     /// Used to exporting into a ToC. Will create a
     /// [Title] with default values for all except:
     /// * [name](Self::name), will be the same (clone)
@@ -279,11 +305,11 @@ impl Title {
         
         let content = extract_key_and_read(file, metadata, "TITLEBITMAP")
             .ok_or(DataStructureError::MissingField { t: StructType::Title, k: "TITLEBITMAP".to_string() })?;
-        let content_hash = hash(&content);
+        let hash = hash(&content);
 
         Ok(Title {
-            content,
-            content_hash,
+            content: Some(content),
+            hash,
             page_index,
             position: page_pos,
             title_level,
@@ -304,7 +330,7 @@ impl Title {
 
 impl std::cmp::PartialEq for Title {
     fn eq(&self, other: &Self) -> bool {
-        self.content_hash == other.content_hash
+        self.hash == other.hash
     }
 }
 

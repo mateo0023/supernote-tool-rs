@@ -376,8 +376,13 @@ impl Notebook {
 }
 
 impl Title {
-    pub fn render_bitmap(&self) -> Result<Vec<u8>, DecoderError> {
-        let decoded = decode_separate(&self.content, self.width, self.height)?;
-        Ok(decoded.into_color(&ColorMap::default()))
+    pub fn render_bitmap(&self) -> Result<Option<Vec<u8>>, DecoderError> {
+        match &self.content {
+            Some(data) => {
+                let decoded = decode_separate(data, self.width, self.height)?;
+                Ok(Some(decoded.into_color(&ColorMap::default())))
+            },
+            None => Ok(None),
+        }
     }
 }

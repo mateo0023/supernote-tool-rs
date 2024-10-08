@@ -32,7 +32,6 @@ struct TitleHolder {
     titles: Vec<TitleEditor>,
 }
 
-// #[derive(Default)]
 pub struct TitleEditor {
     title: String,
     persis_id: Option<egui::Id>,
@@ -43,6 +42,8 @@ pub struct TitleEditor {
     hash: u64,
     /// The page_id on the notebook.
     page_id: String,
+    /// Whether it was edited by the user, ever (it was in Cache).
+    was_edited: bool,
 }
 
 /// Will hold the settings for all the notebooks.
@@ -105,8 +106,8 @@ impl MyApp {
     /// 2. Create the [title editors](TitleHolder).
     /// 3. Shift the pages of the notebooks, in case of merge when exporting.
     pub fn add_notebook(&mut self, mut notebook: Notebook, ctx: &egui::Context) -> Result<(), Box<dyn Error>> {
-        self.app_cache.load_or_add(&mut notebook)?;
-        let new_titles = TitleHolder::from_notebook(&notebook, ctx);
+        self.app_cache.load_or_add(&mut notebook);
+        let new_titles = TitleHolder::from_notebook(&notebook, ctx, self.app_cache.notebooks.get(&notebook.file_id));
         
         self.notebooks.push((notebook, new_titles));
         self.notebooks.sort_by_cached_key(|n| n.0.file_name.clone());
@@ -163,7 +164,7 @@ impl MyApp {
             for (&k, cache) in title_cache {
                 notebook.update_title(k, cache.title.as_deref());
             }
-            holder.update_editor(notebook, );
+            holder.update_editor(notebook);
         }
     }
 
@@ -331,22 +332,22 @@ impl eframe::App for MyApp {
 }
 
 impl TitleHolder {
-    pub fn from_notebook(notebook: &Notebook, ctx: &egui::Context) -> Self {
+    pub fn from_notebook(notebook: &Notebook, ctx: &egui::Context, cache: Option<&HashMap<u64, TitleCache>>) -> Self {
         let mut titles = TitleHolder {
             file_id: notebook.file_id.clone(),
             file_name: notebook.file_name.clone(),
             titles: vec![],
         };
-        titles.create_editors(notebook, ctx);
+        titles.create_editors(notebook, ctx, cache.unwrap_or(&HashMap::new()));
         titles
     }
 
-    /// Creates the [TitleHolder]s from the given [Notebook].
-    fn create_editors(&mut self, notebook: &Notebook, ctx: &egui::Context) {
+    /// Creates the [TitleEditor]s from the given [Notebook].
+    fn create_editors(&mut self, notebook: &Notebook, ctx: &egui::Context, cache: &HashMap<u64, TitleCache>) {
         notebook.get_sorted_titles().into_iter()
             .filter_map(|title| {
                 let page_id = notebook.get_page_id_from_internal(title.page_index)?;
-                TitleEditor::new(title, &page_id, ctx)
+                TitleEditor::new(title, page_id, ctx, cache.get(&title.hash).is_some())
             }.map(|te| (te, title.title_level)).ok()
             )
             .for_each(|(title, lvl)| self.add_title(title, lvl));
@@ -370,51 +371,37 @@ impl TitleHolder {
         if let TitleLevel::BlackBack = lvl {
             self.titles.push(title);
         } else {
-            match self.titles.last_mut() {
-                Some(t) => t.add_child(title),
-                None => {
-                    let mut t = TitleEditor::create_blank(&title.page_id, TitleLevel::default());
-                    t.add_child(title);
-                    self.titles.push(t);
-                },
-            }
+            self.titles.last_mut().expect("Should already contain a home-title")
+                .add_child(title);
+            // match self.titles.last_mut() {
+            //     Some(t) => t.add_child(title),
+            //     None => {
+            //         let mut t = TitleEditor::create_blank(&title.page_id, TitleLevel::default());
+            //         t.add_child(title);
+            //         self.titles.push(t);
+            //     },
+            // }
         }
     }
 }
 
 impl TitleEditor {
-    pub fn new(title: &Title, page_id: &str, ctx: &egui::Context) -> Result<Self, DecoderError> {
+    pub fn new(title: &Title, page_id: String, ctx: &egui::Context, was_edited: bool) -> Result<Self, DecoderError> {
         let bitmap = title.render_bitmap()?;
-        let texture = add_image(&bitmap, title.width, title.height, title.content_hash, ctx)?;
+        let img_texture = match bitmap {
+            Some(bitmap) => Some(add_image(&bitmap, title.width, title.height, title.hash, ctx)?),
+            None => None,
+        };
         Ok(TitleEditor {
             title: title.get_name(),
             persis_id: None,
-            img_texture: Some(texture),
+            img_texture,
             level: title.title_level,
             children: None,
-            hash: title.content_hash,
-            page_id: page_id.to_string(),
+            hash: title.hash,
+            page_id,
+            was_edited,
         })
-    }
-
-    /// Creates a blank title with [Self::level] as `level` and creates a child.
-    pub fn create_blank(page_id: &str, level: TitleLevel) -> Self {
-        use std::hash::{DefaultHasher, Hasher as _};
-    
-    // todo!();
-        let mut hasher = DefaultHasher::new();
-        hasher.write(page_id.as_bytes());
-        hasher.write(&[level as u8]);
-        let hash = hasher.finish();
-        Self {
-            title: String::new(),
-            persis_id: None,
-            img_texture: None,
-            level,
-            children: None,
-            hash,
-            page_id: page_id.to_string(),
-        }
     }
 
     /// Get's the data needed for the [Title] to
@@ -437,25 +424,35 @@ impl TitleEditor {
             ch.push(title);
         } else {
             // Need to go one level down
-            // Create a default (empty title)
-            let ch = self.children.get_or_insert(vec![TitleEditor::create_blank(&title.page_id, self.level.add())]);
+            let ch = self.children.as_mut().unwrap();
             ch.last_mut().unwrap().add_child(title);
         }
     }
 
+    /// Get a flat list of [TitleCache]
     pub fn as_cache_list(&self) -> Vec<TitleCache> {
         match &self.children {
             Some(ch) => {
                 let mut c: Vec<_> = ch.iter().flat_map(|t| t.as_cache_list()).collect();
-                c.push(self.as_single_cache());
+                if let Some(cache) = self.as_single_cache() {
+                    c.push(cache);
+                }
                 c
             },
-            None => vec![self.as_single_cache()],
+            None => match self.as_single_cache() {
+                Some(cache) => vec![cache],
+                None => vec![],
+            },
         }
     }
 
-    fn as_single_cache(&self) -> TitleCache {
-        TitleCache {
+    /// Converts itself to a [TitleCache] to be cached.
+    /// **IGNORING CHILDREN**
+    fn as_single_cache(&self) -> Option<TitleCache> {
+        if !self.was_edited {
+            return None
+        }
+        Some(TitleCache {
             title: match self.title.is_empty() {
                 true => None,
                 false => Some(self.title.clone()),
@@ -463,7 +460,7 @@ impl TitleEditor {
             page_id: self.page_id.clone(),
             hash: self.hash,
             has_content: self.img_texture.is_some(),
-        }
+        })
     }
 
     /// Renders all the titles as [CollapsingHeader](egui::CollapsingHeader)
@@ -479,7 +476,7 @@ impl TitleEditor {
 
                 egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false)
                     .show_header(ui, |ui| {
-                        text_boxes.push((Self::text_edit(&mut self.title, ui), self.img_texture.clone()));
+                        text_boxes.push((Self::text_edit(&mut self.title, ui, &mut self.was_edited), self.img_texture.clone()));
                     })
                     .body(|ui| {
                         text_boxes.extend(children.iter_mut().flat_map(|t| t.show(ui)));
@@ -489,17 +486,19 @@ impl TitleEditor {
             },
             None => {
                 // Simply add text box
-                vec![(Self::text_edit(&mut self.title, ui), self.img_texture.clone())]
+                vec![(Self::text_edit(&mut self.title, ui, &mut self.was_edited), self.img_texture.clone())]
             },
         }
     }
 
-    fn text_edit(title: &mut String, ui: &mut egui::Ui) -> egui::Response {
-        ui.horizontal(|ui| {
-            ui.text_edit_singleline(title)
-        }).inner
+    /// Add the a single-line text editor to the [ui](egui::Ui) & returns that response.
+    fn text_edit(title: &mut String, ui: &mut egui::Ui, edited: &mut bool) -> egui::Response {
+        let editor = ui.text_edit_singleline(title);
+        *edited |= editor.changed();
+        editor
     }
 
+    /// Perform the `f` function on itself and children mutably.
     pub fn visit_mut<F>(&mut self, f: &mut F)
     where
         F: FnMut(&mut TitleEditor)
@@ -542,38 +541,20 @@ impl AppCache {
         self.notebooks.insert(k, v);
     }
 
-    /// Either updates the [notebook](Notebook)'s titles or it 
-    /// creates a cache for the notebook.
-    pub fn load_or_add(&mut self, notebook: &mut Notebook) -> Result<(), Box<dyn Error>> {
-        match self.notebooks.get_mut(&notebook.file_id) {
-            Some(cache) => {
-                // Already had cache, update title.
-                let old_cache = {
-                    let mut on_file_titles = TitleCache::from_notebook(notebook)?;
-                    std::mem::swap(cache, &mut on_file_titles);
-                    on_file_titles
-                    
-                };
-                for (k, c) in old_cache {
-                    // If Title still in file:
-                    if let Some(c_title) = cache.get_mut(&k) {
-                        // * Update the Notebook to contain it
-                        notebook.update_title(k, c.title.as_deref());
-                        // * Update the new cache
-                        c_title.title = c.title;
-                    } else if !c.has_content && c.title.is_some() {
-                        cache.insert(k, c);
-                    }
-                }
-            },
-            None => {
-                // Generate cache data.
-                let cached_titles = TitleCache::from_notebook(notebook)?;
-                self.notebooks.insert(notebook.file_id.clone(), cached_titles);
-            },
+    /// It updates the cached titles in the [notebook](Notebook) and removes
+    /// the ones no longer existing from [AppCache].
+    pub fn load_or_add(&mut self, notebook: &mut Notebook) {
+        if let Some(old_cache) = self.notebooks.get_mut(&notebook.file_id) {
+            old_cache.retain(|k, c| match notebook.titles.contains_key(k) {
+                true => {
+                    notebook.update_title(*k, c.title.as_deref());
+                    true
+                },
+                false => false,
+            });
+        } else {
+            self.notebooks.insert(notebook.file_id.clone(), HashMap::new());
         }
-
-        Ok(())
     }
 
     /// Save to the given path, if any
@@ -585,29 +566,6 @@ impl AppCache {
 }
 
 impl TitleCache {
-    pub fn from_notebook(notebook: &Notebook) -> Result<HashMap<u64, Self>, Box<dyn Error>> {
-        let mut ls = HashMap::with_capacity(notebook.titles.len());
-        for (&h, title) in &notebook.titles {
-            let title = TitleCache::new(title, notebook)?;
-            ls.insert(h, title);
-        }
-        Ok(ls)
-    }
-
-    fn new(title: &Title, notebook: &Notebook) -> Result<Self, Box<dyn Error>> {
-        let page_id = match notebook.get_page_id_from_internal(title.page_index) {
-            Some(id) => id,
-            None => todo!("Create processing error"),
-        };
-
-        Ok(TitleCache {
-            title: title.name.clone(),
-            page_id,
-            hash: title.content_hash,
-            has_content: true,
-        })
-    }
-
     /// Will merge the titles that are both in the receiver and donor lists.
     /// 
     /// If the title is:
@@ -626,14 +584,6 @@ impl TitleCache {
     /// the other contains a [title](Self::title) (is [Some]).
     fn merge_into(&mut self, other: TitleCache){
         self.title = self.title.take().or(other.title);
-    }
-}
-
-impl std::hash::Hash for TitleCache {
-    /// Hash only the [page_id](Self::page_id) and [hash](Self::coords)
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.page_id.hash(state);
-        self.hash.hash(state);
     }
 }
 
