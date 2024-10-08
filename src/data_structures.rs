@@ -308,10 +308,18 @@ impl std::cmp::PartialEq for Title {
 }
 
 impl std::cmp::Ord for Title {
+    /// Compare 2 [Title]s in the following order (going down if equal)
+    /// 1. [page_index](Self::page_index)
+    /// 2. [position](Self::position)
+    /// 3. [title_level](Self::title_level)
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        match self.page_index == other.page_index  {
-            true => self.position.cmp(&other.position),
-            false => self.page_index.cmp(&other.page_index),
+        use std::cmp::Ordering::Equal;
+        match self.page_index.cmp(&other.page_index) {
+            Equal => match self.position.cmp(&other.position) {
+                Equal => self.title_level.cmp(&other.title_level),
+                order => order,
+            },
+            order => order,
         }
     }
 }
