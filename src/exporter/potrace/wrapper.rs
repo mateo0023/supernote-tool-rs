@@ -17,84 +17,33 @@ pub struct Bitmap {
 pub type Word = potrace_word;
 
 impl Bitmap {
-    /// Create a new bitmap with the given width and height.
-    pub fn new() -> Result<Self, Box<dyn Error>> {
-        unsafe {
-            // Calculate dy: words per scanline
-            let bits_per_word = mem::size_of::<c_ulong>() * 8;
-            let dy = ((f_fmt::PAGE_WIDTH + bits_per_word - 1) / bits_per_word) as i32;
-
-            // Allocate the map: dy * h words
-            let size = (dy * PAGE_HEIGHT).unsigned_abs() as usize;
-            let map = libc::calloc(size, mem::size_of::<c_ulong>()) as *mut c_ulong;
-            if map.is_null() {
-                return Err(Box::new(PotraceError::MemAlloc));
-            }
-
-            // Initialize the bitmap struct
-            let bitmap = potrace_bitmap_t {
-                w: PAGE_WIDTH,
-                h: PAGE_HEIGHT,
-                dy,
-                map: map as *mut _,
-            };
-
-            Ok(Self { bitmap })
-        }
-    }
-
-    pub fn from_vec(data: &[Word]) -> Result<Self, Box<dyn Error>> {
-        // Create a new bitmap
-        let mut bitmap = Self::new()?;
-
-        // Set the pixels from the data vector
-        bitmap.set_pixels_from_vec(data)?;
-
-        Ok(bitmap)
-    }
-
-    /// Sets the pixels of the bitmap from a `Vec<bool>`.
-    ///
-    /// Each element in `data` represents a pixel in the bitmap:
-    /// - `true` for a black pixel (set bit)
-    /// - `false` for a white pixel (cleared bit)
-    ///
-    /// # Parameters
-    ///
-    /// - `data`: A slice of booleans representing the pixel data.
-    /// Its length must be equal to `width * height`.
-    ///
+    /// Create a [Bitmap] from the vector.
+    /// 
     /// # Returns
-    ///
-    /// - `Ok(())` on success.
-    /// - `Err(String)` with an error message if an error occurs.
-    ///
-    /// # Safety
-    ///
-    /// This method uses unsafe code to manipulate raw pointers and must be used with care.
-    fn set_pixels_from_vec(&mut self, data: &[Word]) -> Result<(), Box<dyn Error>> {
-        use std::slice;
-
-        unsafe {
-            // Obtain a mutable reference to the underlying Potrace bitmap.
-            let bitmap = &mut self.bitmap;
-
-            // Get the number of words per scanline (row).
-            // `bitmap.dy` is the number of words per scanline.
-            let dy_words = bitmap.dy.unsigned_abs() as usize;
-
-            // Create a mutable slice over the bitmap's raw data.
-            // The total length is `dy_words * bitmap.h`,
-            // which is the total number of words in the bitmap.
-            let map_slice = slice::from_raw_parts_mut(
-                bitmap.map,
-                dy_words * bitmap.h as usize,
-            );
-
-            std::ptr::copy(data.as_ptr(), map_slice.as_mut_ptr(), data.len());
+    /// * `Error`: if the given vector is not the size for an
+    /// Supernote A5X document.
+    pub fn from_vec(data: Vec<Word>) -> Result<Self, PotraceError> {
+        // Calculate dy: words per scanline
+        let bits_per_word = mem::size_of::<c_ulong>() * 8;
+        let dy = ((f_fmt::PAGE_WIDTH + bits_per_word - 1) / bits_per_word) as i32;
+        
+        // Allocate the map: dy * h words
+        let size = (dy * PAGE_HEIGHT).unsigned_abs() as usize;
+        if data.len() != size {
+            return Err(PotraceError::WrongSize);
         }
 
-        Ok(())
+        let mut vec = std::mem::ManuallyDrop::new(data);
+
+        // Initialize the bitmap struct
+        let bitmap = potrace_bitmap_t {
+            w: PAGE_WIDTH,
+            h: PAGE_HEIGHT,
+            dy,
+            map: vec.as_mut_ptr(),
+        };
+
+        Ok(Self { bitmap })
     }
 }
 

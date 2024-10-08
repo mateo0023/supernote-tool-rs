@@ -11,9 +11,14 @@ use crate::common::*;
 
 #[derive(Debug)]
 pub enum PotraceError {
+    /// There was an error tracing the image
+    /// with a potrace error code
     TraceError(i32),
+    /// There was an error building the potrace parameters
+    /// Sould not occur as code calls the default.
     PotraceParams,
-    MemAlloc,
+    /// The passed vector was of an unexpected size.
+    WrongSize,
 }
 
 impl Error for PotraceError{}
@@ -27,7 +32,7 @@ impl std::fmt::Display for PotraceError {
                 e
             ),
             PotraceError::PotraceParams => write!(f, "Unable to create potrace parameters"),
-            PotraceError::MemAlloc => write!(f, "Unable to allocate enough memory to trace"),
+            PotraceError::WrongSize => write!(f, "The passed Vec<_> was of incorrect length"),
         }
     }
 }
@@ -92,10 +97,10 @@ impl TryFrom<DecodedImage> for MultiColorBitmap {
     fn try_from(value: DecodedImage) -> Result<Self, Self::Error> {
         use ColorList::*;
 
-        let white_btmp =  if value.used_white  { Some(Bitmap::from_vec(&value.white)?)  } else {None};
-        let l_gray_btmp = if value.used_l_gray { Some(Bitmap::from_vec(&value.l_gray)?) } else {None};
-        let d_gray_btmp = if value.used_d_gray { Some(Bitmap::from_vec(&value.d_gray)?) } else {None};
-        let black_btmp =  if value.used_black  { Some(Bitmap::from_vec(&value.black)?)  } else {None};
+        let white_btmp =  if value.used_white  { Some(Bitmap::from_vec(value.white)?)  } else {None};
+        let l_gray_btmp = if value.used_l_gray { Some(Bitmap::from_vec(value.l_gray)?) } else {None};
+        let d_gray_btmp = if value.used_d_gray { Some(Bitmap::from_vec(value.d_gray)?) } else {None};
+        let black_btmp =  if value.used_black  { Some(Bitmap::from_vec(value.black)?)  } else {None};
 
         let map = ColorMap::default();
         Ok(Self {
