@@ -242,21 +242,21 @@ impl DecodedImage {
         // Calculate the bit index within the word for the current pixel.
         let mut bit_idx = x % bits_per_word;
         
-        let iter_len = length.min(width-x).min(bits_per_word - bit_idx);
-        for _ in 0..iter_len {
-            arr[word_idx] |= Self::get_mask(bit_idx);
-
-            bit_idx += 1;
-        }
-        x += iter_len;
-        if bit_idx >= bits_per_word || x >= width {
-            word_idx += 1;
-            bit_idx = 0;
-            if x >= width {
-                x = 0;
+        if bit_idx != 0 {
+            let iter_len = length.min(width - x - 1).min(bits_per_word - bit_idx);
+            arr[word_idx] |= Self::get_blanket(bit_idx, iter_len);
+            bit_idx += iter_len;
+            x += iter_len;
+    
+            if bit_idx >= bits_per_word || x >= width {
+                word_idx += 1;
+                bit_idx = 0;
+                if x >= width {
+                    x = 0;
+                }
             }
+            length -= iter_len;
         }
-        length -= iter_len;
         
         while length >= bits_per_word {
             arr[word_idx] = PotraceWord::MAX;
@@ -270,9 +270,15 @@ impl DecodedImage {
             }
         }
 
-        for idx in bit_idx..(bit_idx + length) {
-            arr[word_idx] |= Self::get_mask(idx);
+        if length > 0 {
+            arr[word_idx] |= Self::get_blanket(bit_idx, length);
         }
+    }
+
+    #[inline]
+    fn get_blanket(idx: usize, length: usize) -> PotraceWord {
+        let mask_0 = (1 << length) - 1;
+        mask_0 << (PotraceWord::BITS as usize - length - idx)
     }
 
     fn get_idx_and_mask(&self, idx: usize) -> (usize, PotraceWord) {
@@ -289,6 +295,7 @@ impl DecodedImage {
         (word_idx, Self::get_mask(bit_idx))
     }
 
+    #[inline]
     fn get_mask(rem: usize) -> PotraceWord {
         // 1 << rem
         1 << (PotraceWord::BITS as usize - 1 - rem)

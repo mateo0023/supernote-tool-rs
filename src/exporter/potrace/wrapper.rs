@@ -119,7 +119,7 @@ pub fn generate_combined_paths(
     // There seems to be around 2_500 - 2_600 operations per PotraceState
     let mut operations: Vec<Operation> = Vec::with_capacity(estimate_capacity(&paths)); 
 
-    for (state, fill_color) in paths {
+    for (state, fill_color) in &paths {
         unsafe {
             let mut path = (*state.state).plist;
             
@@ -127,7 +127,11 @@ pub fn generate_combined_paths(
                 // Set the color to be used to the path
                 operations.push(Operation::new(
                     "rg",
-                    fill_color.into_iter().map(|c| c.into()).collect()
+                    vec![
+                        fill_color[0].into(),
+                        fill_color[1].into(),
+                        fill_color[2].into(),
+                    ],
                 ));
                 
                 // Loop over all the subpaths with the given color
