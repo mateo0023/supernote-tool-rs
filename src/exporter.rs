@@ -275,7 +275,7 @@ fn add_toc(doc: &mut Document, titles: &[Title], page_ids: &[ObjectId], catalog_
 }
 
 fn add_pages(pages_id: ObjectId, doc: &mut Document, notebook: &Notebook, colormap: &ColorMap) -> Result<Vec<ObjectId>, Box<dyn Error>> {
-    let mut page_commands = vec![];
+    let mut page_commands = Vec::with_capacity(notebook.pages.len());
     for page in &notebook.pages {
         page_commands.push(page_to_commands(page, colormap)?);
     }

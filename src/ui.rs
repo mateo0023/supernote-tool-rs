@@ -22,6 +22,8 @@ pub struct MyApp {
     out_err: Option<Vec<Box<dyn Error>>>,
     out_name: String,
     settings_path: Option<PathBuf>,
+    show_only_empty: bool,
+    focused_id: Option<egui::Id>,
 }
 
 #[derive(Default)]
@@ -34,7 +36,7 @@ struct TitleHolder {
 
 pub struct TitleEditor {
     title: String,
-    persis_id: Option<egui::Id>,
+    persis_id: egui::Id,
     img_texture: Option<egui::TextureHandle>,
     level: TitleLevel,
     children: Option<Vec<TitleEditor>>,
@@ -92,6 +94,8 @@ impl MyApp {
             app_cache: AppCache::default(),
             out_name: String::new(),
             settings_path: None,
+            show_only_empty: false,
+            focused_id: None,
         }
     }
 
@@ -105,9 +109,9 @@ impl MyApp {
     /// 1. Update the cache & notebook (see [AppCache::load_or_add]).
     /// 2. Create the [title editors](TitleHolder).
     /// 3. Shift the pages of the notebooks, in case of merge when exporting.
-    pub fn add_notebook(&mut self, mut notebook: Notebook, ctx: &egui::Context) -> Result<(), Box<dyn Error>> {
+    pub fn add_notebook(&mut self, mut notebook: Notebook, ui: &egui::Ui, ctx: &egui::Context) -> Result<(), Box<dyn Error>> {
         self.app_cache.load_or_add(&mut notebook);
-        let new_titles = TitleHolder::from_notebook(&notebook, ctx, self.app_cache.notebooks.get(&notebook.file_id));
+        let new_titles = TitleHolder::from_notebook(&notebook, ui, ctx, self.app_cache.notebooks.get(&notebook.file_id));
         
         self.notebooks.push((notebook, new_titles));
         self.notebooks.sort_by_cached_key(|n| n.0.file_name.clone());
@@ -211,7 +215,7 @@ impl eframe::App for MyApp {
                                 self.process_result(
                                     crate::io::load(file_p)
                                 ).and_then(|n| {
-                                    let r = self.add_notebook(n, ctx);
+                                    let r = self.add_notebook(n, ui, ctx);
                                     self.process_result(r)
                                 });
                             }
@@ -280,15 +284,18 @@ impl eframe::App for MyApp {
                 });
             });
 
-            // Combine checkmark
-            if self.notebooks.len() > 1 {
-                ui.horizontal(|ui| {
+            ui.horizontal(|ui| {
+                if ui.checkbox(&mut self.show_only_empty, "Only Show Empty Titles").changed() && !self.show_only_empty {
+                    self.focused_id.take();
+                }
+                // Combine checkmark
+                if self.notebooks.len() > 1 {
                     ui.checkbox(&mut self.app_cache.combine_pdfs, "Combine Notebooks?");
                     if self.app_cache.combine_pdfs {
                         ui.text_edit_singleline(&mut self.out_name);
                     }
-                });
-            }
+                }
+            });
 
             // Error showcasing
             if self.out_err.is_some() && ui.button("Clear Errors").clicked() {
@@ -311,9 +318,15 @@ impl eframe::App for MyApp {
                 let mut title_bx = vec![];
                 for (_, holder) in self.notebooks.iter_mut() {
                     ui.collapsing(holder.file_name.clone(), |ui| {
+                        let mut used = false;
                         for title in holder.titles.iter_mut() {
-                            title_bx.extend(title.show(ui));
+                            let text_boxes = title.show(ui, self.show_only_empty, &mut self.focused_id);
+                            if !text_boxes.is_empty() {
+                                used = true;
+                                title_bx.extend(text_boxes);
+                            }
                         }
+                        if !used {ui.label("All Titles are transcribed");}
                     });
                 }
     
@@ -343,22 +356,22 @@ impl eframe::App for MyApp {
 }
 
 impl TitleHolder {
-    pub fn from_notebook(notebook: &Notebook, ctx: &egui::Context, cache: Option<&HashMap<u64, TitleCache>>) -> Self {
+    pub fn from_notebook(notebook: &Notebook, ui: &egui::Ui, ctx: &egui::Context, cache: Option<&HashMap<u64, TitleCache>>) -> Self {
         let mut titles = TitleHolder {
             file_id: notebook.file_id.clone(),
             file_name: notebook.file_name.clone(),
             titles: vec![],
         };
-        titles.create_editors(notebook, ctx, cache.unwrap_or(&HashMap::new()));
+        titles.create_editors(notebook, ui, ctx, cache.unwrap_or(&HashMap::new()));
         titles
     }
 
     /// Creates the [TitleEditor]s from the given [Notebook].
-    fn create_editors(&mut self, notebook: &Notebook, ctx: &egui::Context, cache: &HashMap<u64, TitleCache>) {
+    fn create_editors(&mut self, notebook: &Notebook, ui: &egui::Ui, ctx: &egui::Context, cache: &HashMap<u64, TitleCache>) {
         notebook.get_sorted_titles().into_iter()
             .filter_map(|title| {
                 let page_id = notebook.get_page_id_from_internal(title.page_index)?;
-                TitleEditor::new(title, page_id, ctx, cache.get(&title.hash).is_some())
+                TitleEditor::new(title, page_id, ui, ctx, cache.get(&title.hash).is_some())
             }.map(|te| (te, title.title_level)).ok()
             )
             .for_each(|(title, lvl)| self.add_title(title, lvl));
@@ -398,15 +411,16 @@ impl TitleHolder {
 }
 
 impl TitleEditor {
-    pub fn new(title: &Title, page_id: String, ctx: &egui::Context, was_edited: bool) -> Result<Self, DecoderError> {
+    pub fn new(title: &Title, page_id: String, ui: &egui::Ui, ctx: &egui::Context, was_edited: bool) -> Result<Self, DecoderError> {
         let bitmap = title.render_bitmap()?;
         let img_texture = match bitmap {
             Some(bitmap) => Some(add_image(&bitmap, title.width, title.height, title.hash, ctx)?),
             None => None,
         };
+        let persis_id = ui.make_persistent_id(format!("collapsing#{}", title.hash));
         Ok(TitleEditor {
             title: title.get_name(),
-            persis_id: None,
+            persis_id,
             img_texture,
             level: title.title_level,
             children: None,
@@ -489,36 +503,55 @@ impl TitleEditor {
     /// Renders all the titles as [CollapsingHeader](egui::CollapsingHeader)
     /// 
     /// If no [children](Self::children), simply render a [TextEdit](egui::TextEdit)
-    pub fn show(&mut self, ui: &mut egui::Ui) -> Vec<(egui::Response, Option<egui::TextureHandle>)> {
+    pub fn show(&mut self, ui: &mut egui::Ui, show_empty: bool, focus: &mut Option<egui::Id>) -> Vec<(egui::Response, Option<egui::TextureHandle>)> {
         match &mut self.children {
             Some(children) => {
-                let &mut id = self.persis_id.get_or_insert(
-                    ui.make_persistent_id(format!("collapsing#{}", self.hash))
-                );
                 let mut text_boxes = vec![];
 
-                egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false)
-                    .show_header(ui, |ui| {
-                        text_boxes.push((Self::text_edit(&mut self.title, ui, &mut self.was_edited), self.img_texture.clone()));
-                    })
-                    .body(|ui| {
-                        text_boxes.extend(children.iter_mut().flat_map(|t| t.show(ui)));
-                    });
+                if show_empty {
+                    if *focus == Some(self.persis_id) || self.title.is_empty() {
+                        let txt_edit = Self::text_edit(&mut self.title, ui);
+                        self.was_edited |= txt_edit.changed();
+                        if txt_edit.has_focus() {
+                            *focus = Some(self.persis_id);
+                        }
+                        text_boxes.push((txt_edit, self.img_texture.clone()));
+                    }
+                    text_boxes.extend(children.iter_mut().flat_map(|t| t.show(ui, show_empty, focus)));
+                } else {
+                    egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), self.persis_id, false)
+                        .show_header(ui, |ui| {
+                            let txt_edit = Self::text_edit(&mut self.title, ui);
+                            self.was_edited |= txt_edit.changed();
+                            if txt_edit.has_focus() {
+                                *focus = Some(self.persis_id);
+                            }
+                            text_boxes.push((txt_edit, self.img_texture.clone()));
+                        })
+                        .body(|ui| {
+                            text_boxes.extend(children.iter_mut().flat_map(|t| t.show(ui, show_empty, focus)));
+                        });
+                }
 
                 text_boxes
             },
             None => {
                 // Simply add text box
-                vec![(Self::text_edit(&mut self.title, ui, &mut self.was_edited), self.img_texture.clone())]
+                if *focus == Some(self.persis_id) || self.title.is_empty() {
+                    let txt_edit = Self::text_edit(&mut self.title, ui);
+                    self.was_edited |= txt_edit.changed();
+                    if txt_edit.has_focus() {
+                        *focus = Some(self.persis_id);
+                    }
+                    vec![(txt_edit, self.img_texture.clone())]
+                } else {vec![]}
             },
         }
     }
 
     /// Add the a single-line text editor to the [ui](egui::Ui) & returns that response.
-    fn text_edit(title: &mut String, ui: &mut egui::Ui, edited: &mut bool) -> egui::Response {
-        let editor = ui.text_edit_singleline(title);
-        *edited |= editor.changed();
-        editor
+    fn text_edit(title: &mut String, ui: &mut egui::Ui) -> egui::Response {
+        ui.text_edit_singleline(title)
     }
 
     /// Perform the `f` function on itself and children mutably.
