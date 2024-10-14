@@ -5,6 +5,9 @@ use std::fs::File;
 use super::io::extract_key_and_read;
 
 pub mod metadata;
+mod stroke;
+
+use stroke::Stroke;
 
 pub mod file_format_consts {
     pub const PAGE_HEIGHT: usize = 1872;
@@ -79,8 +82,12 @@ pub struct Title {
     /// The vertical position on the page.
     /// Same as [`coords[1]`](Self::coords)
     pub position: u32,
-    /// The 
+    /// The rectangle defined by
+    /// `[x, y, width, height]`
     pub coords: [i32; 4],
+    /// The actual pen [strokes](Stroke) that make up the
+    /// [Title].
+    strokes: Vec<Stroke>,
     pub width: usize,
     pub height: usize,
     pub name: Option<String>,
@@ -91,9 +98,10 @@ pub struct Link {
     pub link_type: LinkType,
     pub coords: [i32; 4],
 }
+
 #[derive(Debug, Serialize)]
 pub struct Page {
-    // pub totalpath: Option<Vec<u8>>,
+    pub totalpath: Vec<stroke::Stroke>,
     // pub recogn_file: Option<Vec<u8>>,
     // pub recogn_text: Option<Vec<u8>>,
     pub layers: Vec<Layer>,
@@ -249,9 +257,9 @@ impl Title {
     /// 
     /// # Panics
     /// It may panic when calling [Title::from_meta]
-    pub fn get_vec_from_meta(metadata: &Metadata, file: &mut File) -> Result<Vec<Title>, Box<dyn Error>> {
+    pub fn get_vec_from_meta(metadata: &Metadata, file: &mut File, pages: &[Page]) -> Result<Vec<Title>, Box<dyn Error>> {
         match &metadata.footer.titles {
-            Some(v) => v.iter().map(|metadata| Title::from_meta(metadata, file)).collect(),
+            Some(v) => v.iter().map(|metadata| Title::from_meta(metadata, file, pages)).collect(),
             None => Ok(vec![]),
         }
     }
@@ -278,7 +286,7 @@ impl Title {
     ///     position: u32,
     /// }
     /// ```
-    pub fn from_meta(metadata: &metadata::MetaMap, file: &mut File) -> Result<Title, Box<dyn Error>> {
+    pub fn from_meta(metadata: &metadata::MetaMap, file: &mut File, pages: &[Page]) -> Result<Title, Box<dyn Error>> {
         // Very long chain with possible errors. But it should be fine as long as the file is properly formatted
         let page_pos = metadata.get("TITLERECTORI")
             .ok_or(Box::new(DataStructureError::MissingField { t: StructType::Title, k: "TITLERECTORI".to_string() }))?[0]
@@ -307,6 +315,8 @@ impl Title {
             .ok_or(DataStructureError::MissingField { t: StructType::Title, k: "TITLEBITMAP".to_string() })?;
         let hash = hash(&content);
 
+        let strokes = pages[page_index].clone_strokes_contained(coords);
+
         Ok(Title {
             content: Some(content),
             hash,
@@ -317,6 +327,7 @@ impl Title {
             width,
             height,
             name: None,
+            strokes,
         })
     }
 
@@ -416,14 +427,27 @@ impl Page {
 
     /// Given a [PageMeta](metadata::PageMeta) it returns a [Page].
     pub fn from_meta(metadata: &metadata::PageMeta, file: &mut File) -> Self {
+        let paths = extract_key_and_read(file, &metadata.page_info, "TOTALPATH").unwrap();
         Page {
-            // totalpath: extract_key_and_read(file, &metadata.page_info, "TOTALPATH"),
+            totalpath: stroke::Stroke::process_page(paths).expect("Failed to process the strokes in page"),
             // recogn_file: extract_key_and_read(file, &metadata.page_info, "RECOGNFILE"),
             // recogn_text: extract_key_and_read(file, &metadata.page_info, "RECOGNTEXT"),
             layers: Layer::get_vec_fom_vec(&metadata.layers, file),
             page_num: metadata.page_info.get("PAGE_NUMBER").unwrap()[0].parse().unwrap(),
             page_id: metadata.page_info.get("PAGEID").unwrap()[0].clone(),
         }
+    }
+
+    fn clone_strokes_contained(&self, coords: [i32; 4]) -> Vec<Stroke>{
+        let rect = [
+            coords[0] as u32,
+            coords[1] as u32,
+            (coords[0] + coords[2]) as u32,
+            (coords[1] + coords[3]) as u32,
+        ];
+        self.totalpath.iter()
+            .filter(|&item| item.contained(rect))
+            .map(Stroke::clone).collect()
     }
 }
 

@@ -352,7 +352,7 @@ impl metadata::Metadata {
 
 impl Notebook {
     /// Create a [Notebook] given an open `.note` file and 
-    /// a [file names](String)
+    /// a [file name](String)
     pub fn from_file(file: &mut File, name: String) -> Result<Self, Box<dyn Error>> {
         let metadata = Metadata::from_file(file)?;
         let file_id = metadata.file_id.clone();
@@ -363,7 +363,7 @@ impl Notebook {
         let page_id_map = HashMap::from_iter(pages.iter().map(|page| (page.page_id.clone(), page.page_num - 1)));
 
         let titles = {
-            let mut titles = Title::get_vec_from_meta(&metadata, file)?;
+            let mut titles = Title::get_vec_from_meta(&metadata, file, &pages)?;
             titles.sort();
 
             let mut ghost_titles = vec![];
