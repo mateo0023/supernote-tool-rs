@@ -77,32 +77,25 @@ num_enum!{PenType {
 
 #[derive(Debug, Clone, Serialize, std::cmp::Eq, std::cmp::PartialEq)]
 pub struct Stroke {
-    stroke: Vec<Point>,
-    coord: [u32; 4],
-    color: Color,
-    tool: PenType,
-    line_thikness: u32,
-}
-
-/// This represents a single point in the
-/// storke.
-#[derive(Debug, Clone, Serialize, std::cmp::Eq, std::cmp::PartialEq)]
-pub struct Point {
     /// The x coordinate of the point.
     /// 0 is right, and the units are
     /// 100 points per `mm`
     /// (~11.2 points/pixel)
-    x: u32,
+    x: Vec<u32>,
     /// The y coordinate of the point.
     /// 0 is above, and the units are
     /// 100 points per `mm`
     /// (~11.2 points/pixel)
-    y: u32,
+    y: Vec<u32>,
     /// The force value applied as a u16.
     /// The maximum value is `0xFFF`.
-    force: Force,
+    force: Vec<Force>,
     /// The delta-time of the stroke in milliseconds
-    time: u32,
+    time: Vec<u32>,
+    coord: [u32; 4],
+    color: Color,
+    tool: PenType,
+    line_thikness: u32,
 }
 
 /// Extracts the first 4 bytes and turns them into a [u32].
@@ -157,7 +150,6 @@ impl Stroke {
         if data.len() < total_path_len {
             return Err(Error::TooShort);
         }
-        let mut stroke = Vec::with_capacity(total_path_len);
         
         // * Tool Code
         let (tool_code, data) = get_u32(data).map_err(|_| Error::TooShort)?;
@@ -198,22 +190,35 @@ impl Stroke {
         if time_ct != y_x_ct { return Err(Error::UnmatchedLen) }
 
         let (mut min_x, mut min_y, mut max_x, mut max_y) = (u32::MAX, u32::MAX, u32::MIN, u32::MIN);
+        let mut x_vals = Vec::with_capacity(y_x_ct);
+        let mut y_vals = Vec::with_capacity(y_x_ct);
+        let mut forces = Vec::with_capacity(y_x_ct);
+        let mut time_deltas = Vec::with_capacity(y_x_ct);
         // We've made sure we had enough
         for idx in 0..y_x_ct {
-            let pt = Point::new(
-                &y_x_pts[idx * PTS_SIZE..],
-                &force_ms[idx * FRC_SIZE..],
-                &deltas[idx * TIME_SIZE..]
-            ).map_err(|_| Error::TooShort)?;
-            max_x = max_x.max(pt.x);
-            max_y = max_y.max(pt.y);
-            min_x = min_x.min(pt.x);
-            min_y = min_y.min(pt.y);
-            stroke.push(pt);
+            let (y, x_st) = get_u32(&y_x_pts[idx * PTS_SIZE..]).map_err(|_| Error::IncorrectPoint("y"))?;
+            let (x, _) = get_u32(x_st).map_err(|_| Error::IncorrectPoint("x"))?;
+            let force = u16::from_le_bytes([
+                force_ms[idx * FRC_SIZE],
+                force_ms[idx * FRC_SIZE + 1],
+            ]);
+            // Time in nanoseconds
+            let (time, _) = get_u32(&deltas[idx * TIME_SIZE..]).map_err(|_| Error::IncorrectPoint("time_delta"))?;
+            max_x = max_x.max(x);
+            max_y = max_y.max(y);
+            min_x = min_x.min(x);
+            min_y = min_y.min(y);
+            x_vals.push(x);
+            y_vals.push(y);
+            forces.push(force);
+            time_deltas.push(time);
         }
 
         Ok((Some(Self {
-            stroke,
+            x: x_vals,
+            y: y_vals,
+            force: forces,
+            time: time_deltas,
             coord: [
                 ((MAX_WIDTH - max_x as f64) / SCALE_FACTOR) as u32,
                 (min_y as f64 / SCALE_FACTOR) as u32,
@@ -259,27 +264,4 @@ pub fn clone_strokes_contained(strokes: &[Stroke], rect: [u32; 4]) -> Vec<Stroke
     strokes.iter()
     .filter(|stroke| stroke.contained(rect))
             .map(Stroke::clone).collect()
-}
-
-impl Point {
-    /// Will parse into [Point] given the corresponding slice starting points.
-    fn new(y_x: &[u8], force: &[u8], time: &[u8]) -> Result<Self, Error> {
-        let (y, x_st) = get_u32(y_x).map_err(|_| Error::IncorrectPoint("y"))?;
-        let (x, _) = get_u32(x_st).map_err(|_| Error::IncorrectPoint("x"))?;
-        let force = u16::from_le_bytes([
-            force[0],
-            force[1],
-        ]);
-        // Time in nanoseconds
-        let (time, _) = get_u32(time).map_err(|_| Error::IncorrectPoint("time_delta"))?;
-        Ok(Self {
-            y,
-            x,
-            force,
-            // From nano to milliseconds
-            // From 10^-9 to 10^-3
-            // (delta = 10^-6)
-            time: time / 1_000_000,
-        })
-    }
 }
