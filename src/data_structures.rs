@@ -5,7 +5,7 @@ use std::fs::File;
 use super::io::extract_key_and_read;
 
 pub mod metadata;
-mod stroke;
+pub mod stroke;
 
 use stroke::Stroke;
 
@@ -83,8 +83,8 @@ pub struct Title {
     /// Same as [`coords[1]`](Self::coords)
     pub position: u32,
     /// The rectangle defined by
-    /// `[x, y, width, height]`
-    pub coords: [i32; 4],
+    /// `[x_min, y_min, x_max, y_max]`
+    pub coords: [u32; 4],
     /// The actual pen [strokes](Stroke) that make up the
     /// [Title].
     strokes: Vec<Stroke>,
@@ -96,12 +96,12 @@ pub struct Title {
 pub struct Link {
     pub start_page: usize,
     pub link_type: LinkType,
-    pub coords: [i32; 4],
+    pub coords: [u32; 4],
 }
 
 #[derive(Debug, Serialize)]
 pub struct Page {
-    pub totalpath: Vec<stroke::Stroke>,
+    pub totalpath: Vec<Stroke>,
     // pub recogn_file: Option<Vec<u8>>,
     // pub recogn_text: Option<Vec<u8>>,
     pub layers: Vec<Layer>,
@@ -138,13 +138,15 @@ pub enum TitleLevel {
     Stripped,
 }
 
-fn process_rect_to_corners(rect: Vec<i32>) -> Result<[i32; 4], Box<dyn Error>> {
+/// Process a rectangle in the form `[x, y, width, height]`
+/// to the rectangle: `[x_min, y_min, x_max, y_max]`
+fn process_rect_to_corners(rect: Vec<u32>) -> Result<[u32; 4], DataStructureError> {
     if let [x1, y1, w, h, ..] = rect[..] {
         Ok([
             x1, y1, x1 + w, y1 + h
         ])
     } else {
-        Err(Box::new(DataStructureError::RectFailure))
+        Err(DataStructureError::RectFailure)
     }
 }
 
@@ -295,7 +297,7 @@ impl Title {
             .ok_or(DataStructureError::MissingField { t: StructType::Title, k: "PAGE_NUMBER".to_string() })?[0]
             .parse::<usize>()? - 1;
 
-        let coords: Vec<i32> = {
+        let coords: Vec<u32> = {
             let mut c = vec![];
             let it = metadata.get("TITLERECT")
                 .ok_or(DataStructureError::MissingField { t: StructType::Title, k: "TITLERECT".to_string() })?[0]
@@ -305,8 +307,8 @@ impl Title {
             }
             c
         };
-        let width = coords[2].unsigned_abs() as usize;
-        let height = coords[3].unsigned_abs() as usize;
+        let width = coords[2] as usize;
+        let height = coords[3] as usize;
         let coords = process_rect_to_corners(coords)?;
 
         let title_level = TitleLevel::from_meta(metadata);
@@ -388,6 +390,7 @@ impl Link {
         }))
     }
 
+    /// Wether the link is incoming (receiving) or linking **to** something
     fn is_incoming(link_meta: &metadata::MetaMap) -> Result<bool, Box<dyn Error>> {
         Ok(link_meta.get("LINKINOUT")
             .ok_or(DataStructureError::MissingField { t: StructType::Link, k: "LINKINOUT".to_string() })?[0] == "1")
@@ -408,14 +411,15 @@ impl Link {
             .collect()
     }
 
-    fn get_link_rect(link_meta: &metadata::MetaMap) -> Result<[i32; 4], Box<dyn Error>> {
+    /// Extracts the link's rectangle (where it's located, not where it points).
+    fn get_link_rect(link_meta: &metadata::MetaMap) -> Result<[u32; 4], Box<dyn Error>> {
         let mut poitns = vec![];
         let it = link_meta.get("LINKRECT")
             .ok_or(DataStructureError::MissingField { t: StructType::Link, k: "LINKRECT".to_string() })?[0].split(',');
         for p in it {
             poitns.push(p.parse()?);
         }
-        process_rect_to_corners(poitns)
+        Ok(process_rect_to_corners(poitns)?)
     }
 }
 
@@ -438,16 +442,10 @@ impl Page {
         }
     }
 
-    fn clone_strokes_contained(&self, coords: [i32; 4]) -> Vec<Stroke>{
-        let rect = [
-            coords[0] as u32,
-            coords[1] as u32,
-            (coords[0] + coords[2]) as u32,
-            (coords[1] + coords[3]) as u32,
-        ];
-        self.totalpath.iter()
-            .filter(|&item| item.contained(rect))
-            .map(Stroke::clone).collect()
+    /// Clone the [strokes](Stroke) fully contained in the rectangle defined by
+    /// `[x, y, width, height]`. Should be the same as [Title::coords].
+    fn clone_strokes_contained(&self, coords: [u32; 4]) -> Vec<Stroke>{
+        stroke::clone_strokes_contained(&self.totalpath, coords)
     }
 }
 

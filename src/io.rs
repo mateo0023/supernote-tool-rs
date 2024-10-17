@@ -101,7 +101,7 @@ fn read_file_version(file: &mut File) -> io::Result<Option<u32>> {
     file.seek(SeekFrom::Start(f_fmt::BYTES_BEFORE_VERSION_NUM))?;
     let mut buf = [0; f_fmt::VERSION_NUM_BYTE_LEN];
     if file.read(&mut buf)? < buf.len() {
-        todo!("File has less than {} bytes", buf.len())
+        return Err(io::ErrorKind::OutOfMemory.into());
     }
 
     let version = match std::str::from_utf8(&buf) {

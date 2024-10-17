@@ -5,8 +5,8 @@ use crate::data_structures::*;
 use crate::decoder::{decode_separate, ColorMap, DecodedImage};
 use crate::error::DecoderError;
 
-const A4_WIDTH: i32 = crate::common::f_fmt::PAGE_WIDTH as i32;
-const A4_HEIGHT: i32 = crate::common::f_fmt::PAGE_HEIGHT as i32;
+const A4_WIDTH: u32 = crate::common::f_fmt::PAGE_WIDTH as u32;
+const A4_HEIGHT: u32 = crate::common::f_fmt::PAGE_HEIGHT as u32;
 
 mod potrace;
 
@@ -252,8 +252,6 @@ fn add_toc(doc: &mut Document, titles: &[Title], page_ids: &[ObjectId], catalog_
         title_id_stack.push_back((new_id, title.title_level));
     }
 
-    println!();
-
     if let Some(Object::Dictionary(ref mut outlines_dict)) = doc.objects.get_mut(&outlines_id) {
         // Ensure /First and /Last are set
         if !outlines_dict.has(b"First") {
@@ -303,7 +301,7 @@ fn add_pages(pages_id: ObjectId, doc: &mut Document, notebook: &Notebook, colorm
 fn add_internal_link(
     doc: &mut Document,
     from_page_id: ObjectId,
-    rect: [i32; 4],
+    rect: [u32; 4],
     destination_page_id: ObjectId,
 ) -> Result<(), Box<dyn Error>> {
     // Define the GoTo action

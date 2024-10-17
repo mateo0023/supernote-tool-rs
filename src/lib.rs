@@ -12,6 +12,7 @@ pub mod error {
     pub use crate::decoder::DecoderError;
     pub use crate::data_structures::DataStructureError;
     pub use crate::exporter::PotraceError;
+    pub use crate::data_structures::stroke::Error as StrokeError;
 }
 
 mod ui;
