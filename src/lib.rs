@@ -3,6 +3,8 @@ mod data_structures;
 mod decoder;
 mod exporter;
 
+pub use data_structures::stroke;
+
 pub mod common {
     pub use crate::data_structures::file_format_consts as f_fmt;
     pub type PdfColor = [f64; 3];

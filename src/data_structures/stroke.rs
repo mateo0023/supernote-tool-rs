@@ -5,25 +5,56 @@
 
 use serde::Serialize;
 
+pub mod my_script;
+
 use crate::common::f_fmt;
 
-/// Creates an `enum` with the given `name` and variants.
+/// Creates an `enum` with the given `name` and `variants`.
 /// 
-/// Also adds the [TryFrom<u32>]
+/// Also adds the [TryFrom<T>]
+/// 
+/// # Usage
+/// 
+/// ```rust
+/// num_enum!{ name <T> {
+///     variant1 = 0,
+///     variant2 = 0xF0,
+///     // ...
+/// }}
+/// ```
 macro_rules! num_enum {
-    ($name:ident { $($variant:ident = $value:literal),* $(,)?}) => {
+    ($name:ident <$T:ty> { $($variant:ident = $value:literal),* $(,)?}) => {
         #[derive(Debug, Clone, Serialize, std::cmp::Eq, std::cmp::PartialEq)]
         pub enum $name {
             $($variant = $value),*
         }
 
-        impl TryFrom<u32> for $name {
+        impl TryFrom<$T> for $name {
             type Error = &'static str;
         
-            fn try_from(value: u32) -> Result<$name, Self::Error> {
+            fn try_from(value: $T) -> Result<$name, Self::Error> {
                 match value {
                     $(
-                        x if x == $name::$variant as u32 => {return Ok($name::$variant);}
+                        x if x == $name::$variant as $T => {return Ok($name::$variant);}
+                    ),*
+                    _ => Err("Not found")
+                }
+            }
+        }
+    };
+    ($name:ident <$T:ty> { $($variant:ident),* $(,)?}) => {
+        #[derive(Debug, Clone, Serialize, std::cmp::Eq, std::cmp::PartialEq)]
+        pub enum $name {
+            $($variant),*
+        }
+
+        impl TryFrom<$T> for $name {
+            type Error = &'static str;
+        
+            fn try_from(value: $T) -> Result<$name, Self::Error> {
+                match value {
+                    $(
+                        x if x == $name::$variant as $T => {return Ok($name::$variant);}
                     ),*
                     _ => Err("Not found")
                 }
@@ -34,6 +65,8 @@ macro_rules! num_enum {
 
 /// The pressure force of a point.
 type Force = u16;
+/// The maximum force applied
+const MAX_FORCE: f64 = 0xFFF as f64;
 
 /// How much to scale pixels to points.
 /// 
@@ -62,20 +95,28 @@ pub enum Error {
     IncorrectPoint(&'static str),
 }
 
-num_enum!{ Color {
+num_enum!{ Color <u32> {
     Black     = 0,
     DarkGray  = 0x9D,
     LightGray = 0xCA,
     White     = 0xFE,
 }}
 
-num_enum!{PenType {
+num_enum!{PenType <u32> {
     InkPen      = 0x1,
     NeedlePoint = 0xA,
     Marker      = 0xB,
 }}
 
-#[derive(Debug, Clone, Serialize, std::cmp::Eq, std::cmp::PartialEq)]
+/// Is a single stroke. Made for transforming into Text with the
+/// [MyScript](https://developer.myscript.com) library.
+/// 
+/// Each point is spread across 4 vectors:
+/// * X value (0.01 mm = 1 unit)
+/// * Y value (0.01 mm = 1 unit)
+/// * Force (max = `0xFFF`)
+/// * Time Delta (nano seconds)
+#[derive(Debug, Clone, Serialize, std::cmp::PartialEq)]
 pub struct Stroke {
     /// The x coordinate of the point.
     /// 0 is right, and the units are
@@ -87,14 +128,23 @@ pub struct Stroke {
     /// 100 points per `mm`
     /// (~11.2 points/pixel)
     y: Vec<u32>,
-    /// The force value applied as a u16.
-    /// The maximum value is `0xFFF`.
-    force: Vec<Force>,
+    /// The force value applied as a f64
+    /// (max being 1.0).
+    force: Vec<f64>,
     /// The delta-time of the stroke in milliseconds
     time: Vec<u32>,
+    /// The coordinates of the stroke:
+    /// `[min_x, min_y, max_x, max_y]`
+    #[serde(skip_serializing)]
     coord: [u32; 4],
+    /// The stroke color
+    #[serde(skip_serializing)]
     color: Color,
+    /// The type of stool
+    #[serde(skip_serializing)]
     tool: PenType,
+    /// The thikness of the line.
+    #[serde(skip_serializing)]
     line_thikness: u32,
 }
 
@@ -102,7 +152,7 @@ pub struct Stroke {
 ///
 /// # Returns
 /// * The [u32] and the array starting right after the [u32].
-/// So, `&data[4..]`
+///   So, `&data[4..]`
 /// * Will return [Err] if there are not enough bytes to cast.
 #[inline]
 fn get_u32(data: &[u8]) -> Result<(u32, &[u8]), ()> {
@@ -198,20 +248,22 @@ impl Stroke {
         for idx in 0..y_x_ct {
             let (y, x_st) = get_u32(&y_x_pts[idx * PTS_SIZE..]).map_err(|_| Error::IncorrectPoint("y"))?;
             let (x, _) = get_u32(x_st).map_err(|_| Error::IncorrectPoint("x"))?;
+            // The force as floating point.
             let force = u16::from_le_bytes([
                 force_ms[idx * FRC_SIZE],
                 force_ms[idx * FRC_SIZE + 1],
-            ]);
+            ]) as f64 / MAX_FORCE;
             // Time in nanoseconds
             let (time, _) = get_u32(&deltas[idx * TIME_SIZE..]).map_err(|_| Error::IncorrectPoint("time_delta"))?;
             max_x = max_x.max(x);
             max_y = max_y.max(y);
             min_x = min_x.min(x);
             min_y = min_y.min(y);
-            x_vals.push(x);
+            x_vals.push(MAX_WIDTH as u32 - x);
             y_vals.push(y);
             forces.push(force);
-            time_deltas.push(time);
+            // Change time from 10^-9 to 10^-3 (10^6)
+            time_deltas.push(time / 1_000_000);
         }
 
         Ok((Some(Self {
@@ -260,8 +312,11 @@ impl Stroke {
     }
 }
 
+/// Will clone the storkes that are not markers and are fully contained 
+/// within `rect`, defined by corners.
 pub fn clone_strokes_contained(strokes: &[Stroke], rect: [u32; 4]) -> Vec<Stroke> {
     strokes.iter()
-    .filter(|stroke| stroke.contained(rect))
+    // Have only non-markers fully inside rect.
+    .filter(|stroke| stroke.tool != PenType::Marker && stroke.contained(rect))
             .map(Stroke::clone).collect()
 }

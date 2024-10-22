@@ -59,7 +59,7 @@ pub struct Notebook {
     pub starting_page: usize,
 }
 
-#[derive(Debug, Serialize, Default, std::cmp::Eq)]
+#[derive(Debug, Serialize, Default)]
 pub struct Title {
     /// The encoded content of the Title.
     /// 
@@ -346,6 +346,8 @@ impl std::cmp::PartialEq for Title {
         self.hash == other.hash
     }
 }
+
+impl std::cmp::Eq for Title {}
 
 impl std::cmp::Ord for Title {
     /// Compare 2 [Title]s in the following order (going down if equal)
