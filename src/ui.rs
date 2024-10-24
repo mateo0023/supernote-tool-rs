@@ -537,14 +537,16 @@ impl TitleEditor {
             },
             None => {
                 // Simply add text box
-                if *focus == Some(self.persis_id) || self.title.is_empty() {
+                if !show_empty || (*focus == Some(self.persis_id) || self.title.is_empty()) {
                     let txt_edit = Self::text_edit(&mut self.title, ui);
                     self.was_edited |= txt_edit.changed();
                     if txt_edit.has_focus() {
                         *focus = Some(self.persis_id);
                     }
                     vec![(txt_edit, self.img_texture.clone())]
-                } else {vec![]}
+                } else {
+                    vec![]
+                }
             },
         }
     }
