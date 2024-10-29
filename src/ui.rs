@@ -1,21 +1,20 @@
 use std::error::Error;
-use std::cmp::*;
-use std::collections::HashMap;
 use std::path::PathBuf;
 
-use serde::{Deserialize, Serialize};
 use rfd::FileDialog;
 
-use crate::data_structures::{Notebook, Title, TitleLevel};
+use crate::data_structures::{Notebook, Title, TitleLevel, Transciption, ServerConfig};
 use crate::decoder::ColorMap;
 use crate::error::*;
 use crate::exporter::export_multiple;
 use crate::io::to_file;
+use crate::data_structures::cache::*;
 
 pub mod icon;
 
 pub struct MyApp {
     app_cache: AppCache,
+    server_config: ServerConfig,
     notebooks: Vec<(Notebook, TitleHolder)>,
     colormap: ColorMap,
     out_folder: Option<PathBuf>,
@@ -48,33 +47,6 @@ pub struct TitleEditor {
     was_edited: bool,
 }
 
-/// Will hold the settings for all the notebooks.
-/// 
-/// Maps the [notebook_id](Notebook::file_id) to the [NotebookCache]
-#[derive(Default, Serialize, Deserialize)]
-pub struct AppCache {
-    /// Maps between file_id and Title Cache
-    notebooks: HashMap<String, HashMap<u64, TitleCache>>,
-    /// Wether to combina all the [Notebook]s into 
-    /// a single pdf or export them separately.
-    combine_pdfs: bool,
-}
-
-/// Will be used to store the relevant information
-/// on the title. Will check for page_id and location
-/// of the title only.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct TitleCache {
-    /// The corrected title.
-    title: Option<String>,
-    /// The Page Id from the Notebook
-    page_id: String,
-    /// The hash value of the [content](Title::content).
-    hash: u64,
-    #[serde(default)]
-    has_content: bool,
-}
-
 /// Loads the as a texture with the given context and returns the [TextureHandle](egui::TextureHandle)
 /// or [DecoderError].
 pub fn add_image(bitmap: &[u8], width: usize, height: usize, hash: u64, ctx: &egui::Context)
@@ -88,6 +60,7 @@ impl MyApp {
     pub fn new() -> Self {
         MyApp {
             notebooks: vec![],
+            server_config: ServerConfig::from_path_or_default("./my_script_keys.json"),
             colormap: ColorMap::default(),
             out_folder: None,
             out_err: None,
@@ -110,8 +83,9 @@ impl MyApp {
     /// 2. Create the [title editors](TitleHolder).
     /// 3. Shift the pages of the notebooks, in case of merge when exporting.
     pub fn add_notebook(&mut self, mut notebook: Notebook, ui: &egui::Ui, ctx: &egui::Context) -> Result<(), Box<dyn Error>> {
-        self.app_cache.load_or_add(&mut notebook);
-        let new_titles = TitleHolder::from_notebook(&notebook, ui, ctx, self.app_cache.notebooks.get(&notebook.file_id));
+        notebook.process_titles();
+        self.app_cache.update_from_notebook(&notebook);
+        let new_titles = TitleHolder::from_notebook(&notebook, ui, ctx);
         
         self.notebooks.push((notebook, new_titles));
         self.notebooks.sort_by_cached_key(|n| n.0.file_name.clone());
@@ -128,7 +102,7 @@ impl MyApp {
     /// Will update the titles and render the [notebook(s)](Self::notebooks)
     /// into a PDF (or PDFs).
     fn package_and_export(&mut self) -> Result<(), Box<dyn Error>> {
-        self.update_cache();
+        self.update_cache_from_editor();
         if let Some(p) = self.settings_path.as_ref() {
             self.process_result(self.app_cache.save_to(p));
         }
@@ -162,13 +136,13 @@ impl MyApp {
     /// from [Self::app_cache].
     /// 
     /// Should be called only after loading new [cache](AppCache).
-    fn update_from_cache(&mut self) {
+    fn update_note_from_cache(&mut self) {
         for (notebook, holder) in self.notebooks.iter_mut() {
             let title_cache = self.app_cache.notebooks.get(&notebook.file_id).unwrap();
             for (&k, cache) in title_cache {
-                notebook.update_title(k, cache.title.as_deref());
+                notebook.update_title(k, &cache.title);
             }
-            holder.update_editor(notebook, title_cache);
+            holder.update_editor(notebook);
         }
     }
 
@@ -183,7 +157,7 @@ impl MyApp {
 
     /// Updates [Self::app_cache] from the [TitleEditor]s
     /// in [Self::notebooks].
-    fn update_cache(&mut self) {
+    fn update_cache_from_editor(&mut self) {
         for (_, holder) in &self.notebooks {
             let (k, v) = holder.as_list();
             self.app_cache.update(k, v);
@@ -213,7 +187,7 @@ impl eframe::App for MyApp {
                         if let Some(path_list) = FileDialog::new().add_filter("Supernote File", &["note"]).pick_files() {
                             for file_p in path_list {
                                 self.process_result(
-                                    crate::io::load(file_p)
+                                    crate::io::load(file_p, &self.app_cache, &self.server_config)
                                 ).and_then(|n| {
                                     let r = self.add_notebook(n, ui, ctx);
                                     self.process_result(r)
@@ -226,7 +200,7 @@ impl eframe::App for MyApp {
                         "Close Notebook{}",
                         if self.notebooks.len() < 2 {""} else {"s"}
                     )).clicked() {
-                        self.update_cache();
+                        self.update_cache_from_editor();
                         self.notebooks.clear();
                     }
                 });
@@ -249,14 +223,14 @@ impl eframe::App for MyApp {
                 ui.vertical(|ui| {
                     if ui.button("Load Cache").clicked() {
                         if let Some(paths) = FileDialog::new().add_filter("Settings", &["json"]).pick_files() {
-                            self.update_cache();
+                            self.update_cache_from_editor();
                             for file_p in paths {
                                 let file_p = self.settings_path.insert(file_p);
-                                if let Err(e) = self.app_cache.marge_from_path(file_p) {
+                                if let Err(e) = self.app_cache.merge_from_path(file_p) {
                                     self.add_err(e);
                                 }
                             }
-                            self.update_from_cache();
+                            self.update_note_from_cache();
                         }
                     }
     
@@ -274,7 +248,7 @@ impl eframe::App for MyApp {
                             None => FileDialog::new().add_filter("JSON", &["json"]),
                         };
                         if let Some(out_path) = file_dialog.save_file() {
-                            self.update_cache();
+                            self.update_cache_from_editor();
                             if let Err(e) = self.app_cache.save_to(&out_path) {
                                 self.add_err(e);
                             }
@@ -356,38 +330,54 @@ impl eframe::App for MyApp {
 }
 
 impl TitleHolder {
-    pub fn from_notebook(notebook: &Notebook, ui: &egui::Ui, ctx: &egui::Context, cache: Option<&HashMap<u64, TitleCache>>) -> Self {
+    pub fn from_notebook(notebook: &Notebook, ui: &egui::Ui, ctx: &egui::Context) -> Self {
         let mut titles = TitleHolder {
             file_id: notebook.file_id.clone(),
             file_name: notebook.file_name.clone(),
             titles: vec![],
         };
-        titles.create_editors(notebook, ui, ctx, cache.unwrap_or(&HashMap::new()));
+        titles.create_editors(notebook, ui, ctx);
         titles
     }
 
     /// Creates the [TitleEditor]s from the given [Notebook].
-    fn create_editors(&mut self, notebook: &Notebook, ui: &egui::Ui, ctx: &egui::Context, cache: &HashMap<u64, TitleCache>) {
+    fn create_editors(&mut self, notebook: &Notebook, ui: &egui::Ui, ctx: &egui::Context) {
         notebook.get_sorted_titles().into_iter()
             .filter_map(|title| {
                 let page_id = notebook.get_page_id_from_internal(title.page_index)?;
-                TitleEditor::new(title, page_id, ui, ctx, cache.get(&title.hash).is_some())
+                TitleEditor::new(title, page_id, ui, ctx)
             }.map(|te| (te, title.title_level)).ok()
             )
             .for_each(|(title, lvl)| self.add_title(title, lvl));
     }
 
-    pub fn update_editor(&mut self, notebook: &Notebook, cache: &HashMap<u64, TitleCache>) {
+    /// Updates the editor ([egui] elements) from the given [Notebook].
+    pub fn update_editor(&mut self, notebook: &Notebook) {
         let mut new_titles = notebook.get_sorted_titles().into_iter();
         for title in &mut self.titles {
-            title.visit_mut(&mut |node| if let Some(Title {name: Some(title), ..}) = new_titles.next() {
-                node.title.clone_from(title);
-                node.was_edited = cache.contains_key(&node.hash)
-            });
+            title.visit_mut(&mut |editor| if let Some(Title {name, ..}) = new_titles.next() {
+                match name {
+                    Transciption::Manual(title) => {
+                        editor.title.clone_from(title);
+                        editor.was_edited = true;
+                    },
+                    Transciption::MyScript(title) => {
+                        editor.title.clone_from(title);
+                        editor.was_edited = false;
+                    },
+                    Transciption::None => {
+                        editor.title = String::new();
+                        editor.was_edited = false;
+                    },
+                    Transciption::Processing(_) =>
+                        todo!("Unexpected Title still Processing"),
+                }
+                }
+            );
         }
     }
 
-    pub fn as_list(&self) -> (String, HashMap<u64, TitleCache>) {
+    pub fn as_list(&self) -> (String, NotebookCache) {
         let list = self.titles.iter().flat_map(|t| t.as_cache_list()).map(|t| (t.hash, t)).collect();
         (self.file_id.clone(), list)
     }
@@ -411,15 +401,21 @@ impl TitleHolder {
 }
 
 impl TitleEditor {
-    pub fn new(title: &Title, page_id: String, ui: &egui::Ui, ctx: &egui::Context, was_edited: bool) -> Result<Self, DecoderError> {
+    pub fn new(title: &Title, page_id: String, ui: &egui::Ui, ctx: &egui::Context) -> Result<Self, DecoderError> {
         let bitmap = title.render_bitmap()?;
         let img_texture = match bitmap {
             Some(bitmap) => Some(add_image(&bitmap, title.width, title.height, title.hash, ctx)?),
             None => None,
         };
         let persis_id = ui.make_persistent_id(format!("collapsing#{}", title.hash));
+        let (title_transcript, was_edited) = match &title.name {
+            Transciption::Manual(title) => (title.clone(), true),
+            Transciption::MyScript(title) => (title.clone(), false),
+            Transciption::None => (String::new(), false),
+            Transciption::Processing(_) => todo!(),
+        };
         Ok(TitleEditor {
-            title: title.get_name(),
+            title: title_transcript,
             persis_id,
             img_texture,
             level: title.title_level,
@@ -435,10 +431,13 @@ impl TitleEditor {
     /// 
     /// That's the [title's hash](Title::content_hash) and
     /// new [name](Title::name).
-    pub fn get_data(&self) -> (u64, Option<&str>) {
+    pub fn get_data(&self) -> (u64, Transciption) {
         let title = match self.title.is_empty() {
-            true => None,
-            false => Some(self.title.as_str()),
+            true => Transciption::None,
+            false => match self.was_edited {
+                true => Transciption::Manual(self.title.clone()),
+                false => Transciption::MyScript(self.title.clone()),
+            },
         };
         (self.hash, title)
     }
@@ -475,7 +474,7 @@ impl TitleEditor {
     /// Update the contents of [self] to the given [Notebook].
     pub fn update_notebook(&self, notebook: &mut Notebook) {
         let (hash, name) = self.get_data();
-        notebook.update_title(hash, name);
+        notebook.update_title(hash, &name);
         if let Some(ch) = &self.children {
             ch.iter().for_each(|title| {
                 title.update_notebook(notebook)
@@ -491,12 +490,14 @@ impl TitleEditor {
         }
         Some(TitleCache {
             title: match self.title.is_empty() {
-                true => None,
-                false => Some(self.title.clone()),
+                true => Transciption::None,
+                false => match self.was_edited {
+                    true => Transciption::Manual(self.title.clone()),
+                    false => Transciption::MyScript(self.title.clone()),
+                },
             },
             page_id: self.page_id.clone(),
             hash: self.hash,
-            has_content: self.img_texture.is_some(),
         })
     }
 
@@ -568,80 +569,6 @@ impl TitleEditor {
                 child.visit_mut(f);
             }
         }
-    }
-}
-
-impl AppCache {
-    /// Load an AppCache from a path and merge it into itself.
-    fn marge_from_path(&mut self, path: &PathBuf) -> Result<(), Box<dyn Error>> {
-        let cache: Self = serde_json::from_reader(std::fs::File::open(path)?)?;
-        
-        self.combine_pdfs = cache.combine_pdfs;
-
-        for (note_id, titles) in cache.notebooks {
-            // Either add new title settings or update
-            // the existing one.
-            match self.notebooks.contains_key(&note_id) {
-                true => if let Some(old_titles) = self.notebooks.insert(note_id.clone(), titles) {
-                    let new_titles = self.notebooks.get_mut(&note_id).unwrap();
-                    TitleCache::merge_list_into(new_titles, old_titles);
-                },
-                false => {self.notebooks.insert(note_id, titles);},
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Replaces the Cache data at the key ([file_id](Notebook::file_id) by the new
-    /// [TitleCache]
-    pub fn update(&mut self, k: String, v: HashMap<u64, TitleCache>) {
-        self.notebooks.insert(k, v);
-    }
-
-    /// It updates the cached titles in the [notebook](Notebook) and removes
-    /// the ones no longer existing from [AppCache].
-    pub fn load_or_add(&mut self, notebook: &mut Notebook) {
-        if let Some(old_cache) = self.notebooks.get_mut(&notebook.file_id) {
-            old_cache.retain(|k, c| match notebook.titles.contains_key(k) {
-                true => {
-                    notebook.update_title(*k, c.title.as_deref());
-                    true
-                },
-                false => false,
-            });
-        } else {
-            self.notebooks.insert(notebook.file_id.clone(), HashMap::new());
-        }
-    }
-
-    /// Save to the given path, if any
-    pub fn save_to(&self, path: &PathBuf) -> Result<(), Box<dyn Error>> {
-        let f = std::fs::File::create(path)?;
-        serde_json::to_writer(f, self)?;
-        Ok(())
-    }
-}
-
-impl TitleCache {
-    /// Will merge the titles that are both in the receiver and donor lists.
-    /// 
-    /// If the title is:
-    /// * Only in the `receiver`, it is left alone.
-    /// * Only in the `donor`, it is ignored.
-    /// * In both, the `donnor` is merged into the `receiver`. See [Self::merge_into]
-    pub fn merge_list_into(receiver: &mut HashMap<u64, TitleCache>, donor: HashMap<u64, TitleCache>) {
-        for (hash, old) in donor {
-            if let Some(r) = receiver.get_mut(&hash) {
-                r.merge_into(old);
-            }
-        }
-    }
-
-    /// Will update the [title](Self::title) if it is [None] and
-    /// the other contains a [title](Self::title) (is [Some]).
-    fn merge_into(&mut self, other: TitleCache){
-        self.title = self.title.take().or(other.title);
     }
 }
 

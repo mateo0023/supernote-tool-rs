@@ -3,65 +3,15 @@
 //! 
 //! See the file `/examples/TotalPath Notes.pdf` for my notes
 
+use std::error::Error;
+
 use serde::Serialize;
 
-pub mod my_script;
+mod my_script;
+
+pub use my_script::{MyScriptProcess, ServerConfig};
 
 use crate::common::f_fmt;
-
-/// Creates an `enum` with the given `name` and `variants`.
-/// 
-/// Also adds the [TryFrom<T>]
-/// 
-/// # Usage
-/// 
-/// ```rust
-/// num_enum!{ name <T> {
-///     variant1 = 0,
-///     variant2 = 0xF0,
-///     // ...
-/// }}
-/// ```
-macro_rules! num_enum {
-    ($name:ident <$T:ty> { $($variant:ident = $value:literal),* $(,)?}) => {
-        #[derive(Debug, Clone, Serialize, std::cmp::Eq, std::cmp::PartialEq)]
-        pub enum $name {
-            $($variant = $value),*
-        }
-
-        impl TryFrom<$T> for $name {
-            type Error = &'static str;
-        
-            fn try_from(value: $T) -> Result<$name, Self::Error> {
-                match value {
-                    $(
-                        x if x == $name::$variant as $T => {return Ok($name::$variant);}
-                    ),*
-                    _ => Err("Not found")
-                }
-            }
-        }
-    };
-    ($name:ident <$T:ty> { $($variant:ident),* $(,)?}) => {
-        #[derive(Debug, Clone, Serialize, std::cmp::Eq, std::cmp::PartialEq)]
-        pub enum $name {
-            $($variant),*
-        }
-
-        impl TryFrom<$T> for $name {
-            type Error = &'static str;
-        
-            fn try_from(value: $T) -> Result<$name, Self::Error> {
-                match value {
-                    $(
-                        x if x == $name::$variant as $T => {return Ok($name::$variant);}
-                    ),*
-                    _ => Err("Not found")
-                }
-            }
-        }
-    };
-}
 
 /// The pressure force of a point.
 type Force = u16;
@@ -80,7 +30,7 @@ const MAX_WIDTH: f64 = f_fmt::PAGE_WIDTH as f64 * SCALE_FACTOR;
 const LEN_SIZE: usize = std::mem::size_of::<u32>();
 
 #[derive(Debug)]
-pub enum Error {
+pub enum StrokeError {
     /// The `&[u8]` is too short to extract data.
     /// **OR** too short for the given `path_len`
     TooShort,
@@ -177,15 +127,15 @@ fn get_len(data: &[u8]) -> Result<(usize, &[u8]), ()> {
     Ok((n as usize, d))
 }
 
-impl std::error::Error for Error {}
+impl Error for StrokeError {}
 
-impl std::fmt::Display for Error {
+impl std::fmt::Display for StrokeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Error::TooShort => write!(f, "Data Stream was TooShort"),
-            Error::MissingLength(msg) => write!(f, "Data stream was incorrect format: {}", msg),
-            Error::UnmatchedLen => write!(f, "Unmatched Lengths between segments"),
-            Error::IncorrectPoint(var) => write!(f, "Unexpected error when parsing a stroke point, missing {}", var),
+            StrokeError::TooShort => write!(f, "Data Stream was TooShort"),
+            StrokeError::MissingLength(msg) => write!(f, "Data stream was incorrect format: {}", msg),
+            StrokeError::UnmatchedLen => write!(f, "Unmatched Lengths between segments"),
+            StrokeError::IncorrectPoint(var) => write!(f, "Unexpected error when parsing a stroke point, missing {}", var),
         }
     }
 }
@@ -194,50 +144,50 @@ impl Stroke {
     /// Creates a [Stroke] from the given memory slice.
     /// # Returns
     /// ([Stroke], `remaining_bits`).
-    fn from_slice(data: &[u8]) -> Result<(Option<Self>, &[u8]), Error> {
-        let (total_path_len, data) = get_len(data).map_err(|_| Error::TooShort)?;
+    fn from_slice(data: &[u8]) -> Result<(Option<Self>, &[u8]), StrokeError> {
+        let (total_path_len, data) = get_len(data).map_err(|_| StrokeError::TooShort)?;
         let final_ref = &data[total_path_len..];
         if data.len() < total_path_len {
-            return Err(Error::TooShort);
+            return Err(StrokeError::TooShort);
         }
         
         // * Tool Code
-        let (tool_code, data) = get_u32(data).map_err(|_| Error::TooShort)?;
+        let (tool_code, data) = get_u32(data).map_err(|_| StrokeError::TooShort)?;
         let tool = match PenType::try_from(tool_code) {
             Ok(c) => c,
             Err(_) => return Ok((None, final_ref)),
         };
         // * Color Code
-        let (color, data) = get_u32(data).map_err(|_| Error::TooShort)?;
+        let (color, data) = get_u32(data).map_err(|_| StrokeError::TooShort)?;
         let color = match color.try_into() {
             Ok(c) => c,
             Err(_) => return Ok((None, final_ref)),
         };
         // * Line Thinkness
-        let (line_thikness, data) = get_u32(data).map_err(|_| Error::TooShort)?;
+        let (line_thikness, data) = get_u32(data).map_err(|_| StrokeError::TooShort)?;
 
         // Remove the 196 unkown bytes:
         let data = &data[196..];
 
         // The count of the 24-byte structures.
         const STRUCTURE_SIZE: usize = 24;
-        let (structure_count, data) = get_len(data).map_err(|_| Error::MissingLength("Missing 24-byte Structure Length"))?;
+        let (structure_count, data) = get_len(data).map_err(|_| StrokeError::MissingLength("Missing 24-byte Structure Length"))?;
         let data = &data[structure_count * STRUCTURE_SIZE..];
         
         // It's 4 (u32) * 2 = 8.
         const PTS_SIZE: usize = 8;
-        let (y_x_ct, y_x_pts) = get_len(data).map_err(|_| Error::MissingLength("(Y, X)"))?;
+        let (y_x_ct, y_x_pts) = get_len(data).map_err(|_| StrokeError::MissingLength("(Y, X)"))?;
         let data = &y_x_pts[PTS_SIZE * y_x_ct..];
 
         /// It's the number of u16 (Force)
         const FRC_SIZE: usize = std::mem::size_of::<Force>();
-        let (force_ct, force_ms) = get_len(data).map_err(|_| Error::MissingLength("Force"))?;
-        if force_ct != y_x_ct { return Err(Error::UnmatchedLen) }
+        let (force_ct, force_ms) = get_len(data).map_err(|_| StrokeError::MissingLength("Force"))?;
+        if force_ct != y_x_ct { return Err(StrokeError::UnmatchedLen) }
         let data = &force_ms[force_ct * FRC_SIZE..];
 
         const TIME_SIZE: usize = std::mem::size_of::<u32>();
-        let (time_ct, deltas) = get_len(data).map_err(|_| Error::MissingLength("Time Deltas"))?;
-        if time_ct != y_x_ct { return Err(Error::UnmatchedLen) }
+        let (time_ct, deltas) = get_len(data).map_err(|_| StrokeError::MissingLength("Time Deltas"))?;
+        if time_ct != y_x_ct { return Err(StrokeError::UnmatchedLen) }
 
         let (mut min_x, mut min_y, mut max_x, mut max_y) = (u32::MAX, u32::MAX, u32::MIN, u32::MIN);
         let mut x_vals = Vec::with_capacity(y_x_ct);
@@ -246,20 +196,20 @@ impl Stroke {
         let mut time_deltas = Vec::with_capacity(y_x_ct);
         // We've made sure we had enough
         for idx in 0..y_x_ct {
-            let (y, x_st) = get_u32(&y_x_pts[idx * PTS_SIZE..]).map_err(|_| Error::IncorrectPoint("y"))?;
-            let (x, _) = get_u32(x_st).map_err(|_| Error::IncorrectPoint("x"))?;
+            let (y, x_st) = get_u32(&y_x_pts[idx * PTS_SIZE..]).map_err(|_| StrokeError::IncorrectPoint("y"))?;
+            let (x, _) = get_u32(x_st).map_err(|_| StrokeError::IncorrectPoint("x"))?;
             // The force as floating point.
             let force = u16::from_le_bytes([
                 force_ms[idx * FRC_SIZE],
                 force_ms[idx * FRC_SIZE + 1],
             ]) as f64 / MAX_FORCE;
             // Time in nanoseconds
-            let (time, _) = get_u32(&deltas[idx * TIME_SIZE..]).map_err(|_| Error::IncorrectPoint("time_delta"))?;
+            let (time, _) = get_u32(&deltas[idx * TIME_SIZE..]).map_err(|_| StrokeError::IncorrectPoint("time_delta"))?;
             max_x = max_x.max(x);
             max_y = max_y.max(y);
             min_x = min_x.min(x);
             min_y = min_y.min(y);
-            x_vals.push(MAX_WIDTH as u32 - x);
+            x_vals.push((MAX_WIDTH.ceil() as u32).saturating_sub(x));
             y_vals.push(y);
             forces.push(force);
             // Change time from 10^-9 to 10^-3 (10^6)
@@ -283,8 +233,8 @@ impl Stroke {
         }), final_ref))
     }
 
-    pub fn process_page(data: Vec<u8>) -> Result<Vec<Self>, Error> {
-        let (path_count, mut data) = get_len(&data).map_err(|_| Error::TooShort)?;
+    pub fn process_page(data: Vec<u8>) -> Result<Vec<Self>, StrokeError> {
+        let (path_count, mut data) = get_len(&data).map_err(|_| StrokeError::TooShort)?;
         let mut paths = Vec::with_capacity(path_count);
 
         while !data.is_empty() {

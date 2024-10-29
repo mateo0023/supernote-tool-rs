@@ -5,9 +5,14 @@ use std::fs::File;
 use super::io::extract_key_and_read;
 
 pub mod metadata;
-pub mod stroke;
+mod stroke;
+pub mod cache;
 
+
+pub use stroke::StrokeError;
+use cache::NotebookCache;
 use stroke::Stroke;
+pub use stroke::ServerConfig;
 
 pub mod file_format_consts {
     pub const PAGE_HEIGHT: usize = 1872;
@@ -15,7 +20,7 @@ pub mod file_format_consts {
 }
 
 use metadata::Metadata;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug)]
 pub enum DataStructureError {
@@ -29,11 +34,18 @@ pub enum StructType {
     Link,
 }
 
-/// Will contain all the necessary information from the Notebook
-/// 
-/// # ToDo!
-/// * Keyword
-#[derive(Debug, Serialize)]
+#[derive(Debug, Default, Deserialize, PartialEq, Eq)]
+pub enum Transciption {
+    Manual(String),
+    MyScript(String),
+    #[serde(skip_deserializing)]
+    Processing(stroke::MyScriptProcess),
+    #[default]
+    None
+}
+
+
+#[derive(Serialize)]
 pub struct Notebook {
     /// The file name (not including the extension)
     pub file_name: String,
@@ -50,7 +62,7 @@ pub struct Notebook {
     /// 
     /// Pages are sorted
     pub pages: Vec<Page>,
-    /// Map between PAGE_ID and page indexes.
+    /// Map between [`PAGE_ID`](Page::page_id) and page indexes.
     pub page_id_map: HashMap<String, usize>,
     /// The notebook's starting page.
     /// 
@@ -59,16 +71,16 @@ pub struct Notebook {
     pub starting_page: usize,
 }
 
-#[derive(Debug, Serialize, Default)]
+#[derive(Serialize, Default)]
 pub struct Title {
     /// The encoded content of the Title.
     /// 
     /// To be decoded into a Bitmap
     pub content: Option<Vec<u8>>,
-    /// The hash of [Self::content], if any.
+    /// The hash of [`Self::content`], if any.
     /// Otherwise it will be a hash of the:
     /// 1. `page_id`, and
-    /// 2. [Self::title_level]
+    /// 2. [`Self::title_level`]
     pub hash: u64,
     /// Essentially the type of title
     /// 
@@ -85,12 +97,9 @@ pub struct Title {
     /// The rectangle defined by
     /// `[x_min, y_min, x_max, y_max]`
     pub coords: [u32; 4],
-    /// The actual pen [strokes](Stroke) that make up the
-    /// [Title].
-    strokes: Vec<Stroke>,
     pub width: usize,
     pub height: usize,
-    pub name: Option<String>,
+    pub name: Transciption,
 }
 #[derive(Debug, Serialize)]
 pub struct Link {
@@ -102,8 +111,6 @@ pub struct Link {
 #[derive(Debug, Serialize)]
 pub struct Page {
     pub totalpath: Vec<Stroke>,
-    // pub recogn_file: Option<Vec<u8>>,
-    // pub recogn_text: Option<Vec<u8>>,
     pub layers: Vec<Layer>,
     pub page_num: usize,
     pub page_id: String,
@@ -121,7 +128,7 @@ pub enum LinkType {
     SameFile{page_id: String},
     /// A link to the same file, containing:
     /// * Page Index
-    /// * The other's file_id
+    /// * The other's [`file_id`](Notebook::file_id)
     OtherFile{page_id: String, file_id: String},
     /// A link to a website, contains the link.
     WebLink{link: String},
@@ -167,18 +174,148 @@ fn hash(content: &[u8]) -> u64 {
 // ###########################################################################################################
 // ###########################################################################################################
 
-impl Notebook {
-    /// Update the title's name field given its hash value.
-    /// 
-    /// Will set it to none if empty.
-    pub fn update_title(&mut self, title_hash: u64, new_title: Option<&str>) {
-        if let Some(title) = self.titles.get_mut(&title_hash) {
-            if let Some(new) = new_title {
-                title.name = Some(new.to_string());
-            }
+impl Transciption {
+    pub fn begin(strokes: Vec<Stroke>, config: stroke::ServerConfig) -> Self {
+        Transciption::Processing(stroke::MyScriptProcess::new(strokes, config))
+    }
+    
+    pub fn from_stroke_and_cache(strokes: Vec<Stroke>, config: stroke::ServerConfig, other: &Transciption) -> Self {
+        match other {
+            Transciption::Manual(s) => Transciption::Manual(s.clone()),
+            Transciption::MyScript(s) => Transciption::MyScript(s.clone()),
+            Transciption::Processing(_) => panic!("Cache should not be Processing"),
+            Transciption::None => Transciption::Processing(stroke::MyScriptProcess::new(strokes, config)),
         }
     }
 
+    /// Will get the transcription.
+    /// 
+    /// Both [`Processing`](Transciption::Processing)
+    /// and [`None`](Transciption::None) will return an empty `&str`
+    pub fn get_or_default(&self) -> &str {
+        match self {
+            Transciption::Manual(txt) |
+            Transciption::MyScript(txt) => txt.as_str(),
+            Transciption::Processing(_) |
+            Transciption::None => "",
+        }
+    }
+
+    /// If it's process, it will finish processing.
+    /// Will set itself to the default if returns error.
+    /// 
+    /// # Returns
+    /// * `Option<Error>` which could be either a:
+    ///   * [reqwest::Error]
+    ///   * [serde_json::Error]
+    fn finish_process_or_default(&mut self) -> Option<Box<dyn Error>>{
+        if self.is_processing() {
+            if let Self::Processing(pr) = std::mem::take(self) {
+                match pr.block_and_parse() {
+                    Ok(res) => *self = Transciption::MyScript(res),
+                    Err(e) => {
+                        *self = Transciption::None;
+                        return Some(e);
+                    },
+                }
+            }
+        }
+        None
+    }
+
+    pub fn is_processing(&self) -> bool {
+        match self {
+            Transciption::Manual(_) |
+            Transciption::MyScript(_) |
+            Transciption::None => false,
+            Transciption::Processing(_) => true,
+        }
+    }
+
+    /// Merges the `other` [Transciption] into self.
+    pub fn merge_into(&mut self, other: Transciption) {
+        if self.should_merge(&other) {
+            *self = other;
+        }
+    }
+
+    /// Clone the [`Transciption`] only if it's been transcribed already
+    /// (it's [`Manual`](Transciption::Manual) or
+    /// [`MyScript`](Transciption::MyScript))
+    pub fn get_clone_for_cache(&self) -> Option<Self> {
+        match self {
+            Transciption::Manual(s) => Some(Transciption::Manual(s.clone())),
+            Transciption::MyScript(s) => Some(Transciption::MyScript(s.clone())),
+            Transciption::Processing(_) |
+            Transciption::None => None,
+        }
+    }
+
+    /// Merges the `other` [Transciption] into `self`.
+    pub fn merge_into_ref(&mut self, other: &Transciption) {
+        *self = match (other, std::mem::take(self)) {
+            (Transciption::Manual(s), _) => Transciption::Manual(s.clone()),
+            (Transciption::MyScript(s), Transciption::None) => Transciption::MyScript(s.clone()),
+            (Transciption::MyScript(_), old_self) => old_self,
+            (Transciption::None, old_self) => old_self,
+            (Transciption::Processing(_), _) => panic!("Shouldn't merge from Transcription::Processing"),
+        }
+    }
+
+    /// Wether we should merge `other` into [self].
+    fn should_merge(&self, other: &Transciption) -> bool {
+        match (other, &self) {
+            (Transciption::Manual(_), _) => true,
+            (Transciption::MyScript(_), Transciption::None) => true,
+            (Transciption::MyScript(_), _) => false,
+            (Transciption::None, _) => false,
+            (Transciption::Processing(_), Transciption::None) => true,
+            (Transciption::Processing(_), _) => false,
+        }
+    }
+}
+
+impl Serialize for Transciption {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer {
+            use serde::ser::SerializeTupleVariant;
+            match self {
+                Transciption::Manual(s) => {
+                    let mut tv = serializer.serialize_tuple_variant("Transcription", 0, "Manual", 1)?;
+                    tv.serialize_field(s)?;
+                    tv.end()
+                },
+                Transciption::MyScript(s) => {
+                    let mut tv = serializer.serialize_tuple_variant("Transcription", 0, "MyScript", 1)?;
+                    tv.serialize_field(s)?;
+                    tv.end()
+                },
+                Transciption::Processing(_) |
+                Transciption::None => {
+                    serializer.serialize_tuple_variant("Transcription", 0, "None", 0)?
+                        .end()
+                },
+            }
+    }
+}
+
+impl Notebook {
+    /// Update the title's [name](Title::name)
+    /// field given the hash value and [new_title](Transciption) (from [AppCache])
+    /// 
+    /// ### Name
+    /// Will set it to [None](Transciption::None) if empty.
+    /// 
+    /// ### Strokes
+    /// Will set to [None](StrokeContainer::None) if there's already a transcription
+    pub fn update_title(&mut self, title_hash: u64, new_title: &Transciption) {
+        if let Some(title) = self.titles.get_mut(&title_hash) {
+            title.name.merge_into_ref(new_title);
+        }
+    }
+
+    /// See [Title::cmp]
     pub fn get_sorted_titles(&self) -> Vec<&Title> {
         let mut titles: Vec<&Title> = self.titles.values().collect();
         titles.sort();
@@ -201,6 +338,37 @@ impl Notebook {
     pub fn get_page_index_from_id(&self, page_id: &str) -> Option<usize> {
         self.page_id_map.get(page_id).copied().map(|idx| idx + self.starting_page)
     }
+
+    /// Computes the [`NotebookCache`] given the already-processed
+    /// Title's [`Transcription`](Transciption).
+    fn get_cache(&self) -> NotebookCache {
+        self.titles.iter()
+            .filter_map(|(&k, title)|
+                cache::TitleCache::form_title(
+                    title,
+                    self.pages[title.page_index].page_id.clone()
+                )
+                .map(|c| (k, c))
+            ).collect()
+    }
+
+    /// Loops over the titles and updates the transcriptions.
+    /// 
+    /// See [Transciption::finish_process_or_default()]
+    /// 
+    /// # Returns 
+    /// A vector with the errors in transcription/Deserializing,
+    /// if any
+    pub fn process_titles(&mut self) -> Option<Vec<Box<dyn Error>>> {
+        let errors: Vec<_> = self.titles.iter_mut().filter_map(|(_, title)|
+            title.name.finish_process_or_default()
+        ).collect();
+
+        match errors.is_empty() {
+            true => None,
+            false => Some(errors)
+        }
+    }
 }
 
 impl Title {
@@ -209,7 +377,7 @@ impl Title {
         Title {
             title_level: TitleLevel::FileLevel,
             page_index: index,
-            name: Some(name.to_string()),
+            name: Transciption::Manual(name.to_string()),
             ..Default::default()
         }
     }
@@ -244,7 +412,7 @@ impl Title {
     /// * [title_level](Self::title_level), will be the same (copy)
     pub fn basic_for_toc(&self, shift: usize) -> Self {
         Title {
-            name: self.name.clone(),
+            name: self.name.get_clone_for_cache().unwrap_or_default(),
             page_index: self.page_index + shift,
             title_level: self.title_level,
             ..Default::default()
@@ -259,9 +427,9 @@ impl Title {
     /// 
     /// # Panics
     /// It may panic when calling [Title::from_meta]
-    pub fn get_vec_from_meta(metadata: &Metadata, file: &mut File, pages: &[Page]) -> Result<Vec<Title>, Box<dyn Error>> {
+    pub fn get_vec_from_meta(metadata: &Metadata, file: &mut File, pages: &[Page], cache: Option<&NotebookCache>, config: &ServerConfig) -> Result<Vec<Title>, Box<dyn Error>> {
         match &metadata.footer.titles {
-            Some(v) => v.iter().map(|metadata| Title::from_meta(metadata, file, pages)).collect(),
+            Some(v) => v.iter().map(|metadata| Title::from_meta(metadata, file, pages, cache, config)).collect(),
             None => Ok(vec![]),
         }
     }
@@ -288,7 +456,7 @@ impl Title {
     ///     position: u32,
     /// }
     /// ```
-    pub fn from_meta(metadata: &metadata::MetaMap, file: &mut File, pages: &[Page]) -> Result<Title, Box<dyn Error>> {
+    pub fn from_meta(metadata: &metadata::MetaMap, file: &mut File, pages: &[Page], cache: Option<&NotebookCache>, config: &ServerConfig) -> Result<Title, Box<dyn Error>> {
         // Very long chain with possible errors. But it should be fine as long as the file is properly formatted
         let page_pos = metadata.get("TITLERECTORI")
             .ok_or(Box::new(DataStructureError::MissingField { t: StructType::Title, k: "TITLERECTORI".to_string() }))?[0]
@@ -317,7 +485,19 @@ impl Title {
             .ok_or(DataStructureError::MissingField { t: StructType::Title, k: "TITLEBITMAP".to_string() })?;
         let hash = hash(&content);
 
-        let strokes = pages[page_index].clone_strokes_contained(coords);
+        let name = match cache {
+            Some(note_cache) => match note_cache.get(&hash) {
+                Some(cache) => match &cache.title {
+                    Transciption::Manual(s) => Transciption::Manual(s.clone()),
+                    Transciption::MyScript(s) => Transciption::MyScript(s.clone()),
+                    Transciption::Processing(_) => panic!("Cache should not contain processing"),
+                    Transciption::None => 
+                        Transciption::begin(pages[page_index].clone_strokes_contained(coords), config.clone()),
+                },
+                None => Transciption::begin(pages[page_index].clone_strokes_contained(coords), config.clone()),
+            },
+            None => Transciption::begin(pages[page_index].clone_strokes_contained(coords), config.clone()),
+        };
 
         Ok(Title {
             content: Some(content),
@@ -328,8 +508,7 @@ impl Title {
             coords,
             width,
             height,
-            name: None,
-            strokes,
+            name,
         })
     }
 
@@ -337,7 +516,7 @@ impl Title {
     /// 
     /// Will default to an empty string.
     pub fn get_name(&self) -> String {
-        self.name.clone().unwrap_or_default()
+        self.name.get_or_default().to_string()
     }
 }
 

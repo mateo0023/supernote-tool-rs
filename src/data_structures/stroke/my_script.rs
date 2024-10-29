@@ -2,12 +2,13 @@
 //! [MyScript](https://www.myscript.com). Built based on their REST
 //! documentation, seen [here](https://swaggerui.myscript.com).
 
-use std::{error::Error, path::Path};
+use std::error::Error;
+use std::path::Path;
 
 use super::Stroke;
 
-use reqwest::Response;
 use serde::{Deserialize, Serialize};
+use tokio::task::JoinHandle;
 
 /// Contains [Vec] of [Stroke]s.
 #[derive(Default, Serialize)]
@@ -15,10 +16,33 @@ struct StrokeGroup {
     strokes: Vec<Stroke>,
 }
 
+/// Creates a [same-thread](tokio::runtime::Builder::new_current_thread)
+/// tokio [runtime](tokio::runtime::Runtime) to run the HTTP request 
+/// to the [MyScript API](https://swaggerui.myscript.com/#/Batch)
+#[derive(Debug)]
+pub struct MyScriptProcess {
+    runtime: tokio::runtime::Runtime,
+    command_hash: u64,
+    // receiver: oneshot::Receiver<Result<String, reqwest::Error>>,
+    handle: JoinHandle<Result<String, reqwest::Error>>,
+}
+
+impl Eq for MyScriptProcess {}
+
+impl PartialEq for MyScriptProcess {
+    fn eq(&self, other: &Self) -> bool {
+        self.command_hash == other.command_hash
+    }
+}
+
 /// Stores the keys needed to send requests to
-/// the MyScript servers. See [Self::default]
-/// for more information.
-#[derive(Deserialize)]
+/// the MyScript servers.
+/// 
+/// The API Keys will `default` to the ones seen in their
+/// [GitHub](https://github.com/MyScript/iinkTS/blob/master/examples/server-configuration.json).
+/// 
+/// ### Use default values at your own risk.
+#[derive(Deserialize, Clone)]
 pub struct ServerConfig {
     #[serde(rename = "applicationKey")]
     api_key: String,
@@ -26,28 +50,32 @@ pub struct ServerConfig {
     hmac_key: String,
 }
 
+/// The struct that contains the relevant information
+/// from the response.
+/// 
+/// The response contains many other attributes that
+/// are not needed.
+#[derive(Deserialize)]
+struct MyScriptResponse {
+    /// The actual transcribed text.
+    label: String,
+}
+
 /// Will transcribe the given set of
 /// [StrokeGroup](https://swaggerui.myscript.com/#/Batch%20mode/batch#StrokeGroup)s
-/// 
-/// The API Keys will be loaded from `./my_script_keys.json/`. However, it 
-/// will default to the ones seen in their
-/// [GitHub](https://github.com/MyScript/iinkTS/blob/master/examples/server-configuration.json)
-pub async fn transcribe(strokes: Vec<&[Stroke]>) -> Result<Response, Box<dyn Error>> {
+async fn transcribe(body: String, hmac: String, config: ServerConfig) -> Result<String, reqwest::Error> {
     use reqwest::Client;
     use reqwest::header::{ACCEPT, CONTENT_TYPE};
 
-    let body = build_body(strokes);
-    let config = ServerConfig::from_path("./my_script_keys.json").unwrap_or_default();
-    let hmac = compute_hmac(&config, &body);
-
-    Ok(Client::new()
+    Client::new()
         .post("https://cloud.myscript.com/api/v4.0/iink/batch")
         .header(ACCEPT, "application/json,application/vnd.myscript.jiix")
         .header("hmac", hmac)
         .header("applicationkey", config.api_key)
         .header(CONTENT_TYPE, "application/json")
         .body(body)
-        .send().await?)
+        .send().await?
+        .text().await
 }
 
 /// Computes the HMAC given the [ServerConfig] and
@@ -67,13 +95,13 @@ fn compute_hmac(config: &ServerConfig, data: &str) -> String {
 }
 
 /// Builds the body of the request as a JSON.
-/// This includes the configuration for the response.
+/// This includes the **configuration** for the response.
 /// 
 /// **See** [REST API](https://swaggerui.myscript.com/#/)
 /// and [Jiix Docs](https://developer.myscript.com/docs/interactive-ink/3.2/reference/configuration/)
 /// 
 /// Uses the [serde_json::json!] macro.
-fn build_body(strokes: Vec<&[Stroke]>) -> String {
+fn build_body(strokes: Vec<Stroke>) -> String {
     serde_json::json!({
         "contentType": "Text",
         "configuration": {
@@ -97,20 +125,14 @@ fn build_body(strokes: Vec<&[Stroke]>) -> String {
                 "eraser": {
                     "erase-precisely": false
                 },
-                "margin": {
-                    "top": 20,
-                    "left": 10,
-                    "right": 10,
-                    "bottom": 10
-                },
                 "mimeTypes": [
                     "application/vnd.myscript.jiix"
                 ]
             }
         },
-        "strokeGroups": serde_json::to_value(
-            strokes.into_iter().map(StrokeGroup::from).collect::<Vec<_>>()
-        ).unwrap()
+        "strokeGroups": [{
+            "strokes": serde_json::to_value(strokes).unwrap(),
+        }]
     }).to_string()
 }
 
@@ -133,11 +155,54 @@ impl From<&[Stroke]> for StrokeGroup {
     }
 }
 
+impl MyScriptProcess {
+    pub fn new(strokes: Vec<Stroke>, config: ServerConfig) -> Self {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build().unwrap();
+        let body = build_body(strokes);
+        let hmac = compute_hmac(&config, &body);
+        let hash = crate::data_structures::hash(hmac.as_bytes());
+        
+        let handle = rt.spawn(transcribe(body, hmac, config));
+        Self {
+            runtime: rt,
+            command_hash: hash,
+            handle,
+        }
+    }
+
+    /// Blocks the current thread until MyScript returns the
+    /// response and returns that [response body](reqwest::Response::text)
+    /// or any [errors](reqwest::Error)
+    fn block_and_complete(self) -> Result<String, reqwest::Error> {
+        self.runtime.block_on(async move {
+            self.handle.await.unwrap()
+        })
+    }
+
+    /// Blocks the current thread and returns the parsed response, with 
+    /// any errors that may have occurred while sending the request or 
+    /// parsing the response's JSON ([deserializing](Deserialize)).
+    pub fn block_and_parse(self) -> Result<String, Box<dyn Error>> {
+        let http_response = self.block_and_complete()?;
+        let resp: MyScriptResponse = serde_json::from_str(&http_response)?;
+
+        Ok(resp.into_string())
+    }
+}
+
 impl ServerConfig {
     /// Loads the [API Keys](ServerConfig) from the given `path`.
     pub fn from_path<P: AsRef<Path>> (path: P) -> Result<Self, Box<dyn Error>> {
         use std::fs::File;
         Ok(serde_json::from_reader(File::open(path)?)?)
+    }
+
+    /// See [Self::from_path()].
+    #[inline]
+    pub fn from_path_or_default<P: AsRef<Path>> (path: P) -> Self {
+        Self::from_path(path).unwrap_or_default()
     }
 }
 
@@ -156,3 +221,8 @@ impl Default for ServerConfig {
     }
 }
 
+impl MyScriptResponse {
+    fn into_string(self) -> String {
+        self.label.replace('\n', " ")
+    }
+}

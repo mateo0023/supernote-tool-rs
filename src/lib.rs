@@ -1,9 +1,9 @@
+#[macro_use]
+mod macros;
 mod io;
 mod data_structures;
 mod decoder;
 mod exporter;
-
-pub use data_structures::stroke;
 
 pub mod common {
     pub use crate::data_structures::file_format_consts as f_fmt;
@@ -14,7 +14,7 @@ pub mod error {
     pub use crate::decoder::DecoderError;
     pub use crate::data_structures::DataStructureError;
     pub use crate::exporter::PotraceError;
-    pub use crate::data_structures::stroke::Error as StrokeError;
+    pub use crate::data_structures::StrokeError;
 }
 
 mod ui;

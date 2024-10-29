@@ -7,6 +7,8 @@ use std::io::{self, prelude::*, SeekFrom};
 use std::path::Path;
 
 use byteorder::{LittleEndian, ReadBytesExt};
+use cache::AppCache;
+use crate::data_structures::ServerConfig;
 use regex::Regex;
 
 use crate::data_structures::{*, metadata::{Metadata, MetaMap}};
@@ -78,11 +80,11 @@ const LAYER_KEYS: [&str; 5] = ["MAINLAYER", "LAYER1", "LAYER2", "LAYER3", "BGLAY
 
 
 /// Loads
-pub fn load(path: std::path::PathBuf) -> Result<Notebook, Box<dyn Error>> {
+pub fn load(path: std::path::PathBuf, cache: &AppCache, config: &ServerConfig) -> Result<Notebook, Box<dyn Error>> {
     let name = path.file_stem().unwrap().to_str().unwrap();
     let mut file = File::open(path.clone())?;
 
-    Notebook::from_file(&mut file, name.to_string())
+    Notebook::from_file(&mut file, name.to_string(), cache, config)
 }
 
 /// Looks at the beggining of the file where the file version should be.
@@ -353,7 +355,7 @@ impl metadata::Metadata {
 impl Notebook {
     /// Create a [Notebook] given an open `.note` file and 
     /// a [file name](String)
-    pub fn from_file(file: &mut File, name: String) -> Result<Self, Box<dyn Error>> {
+    pub fn from_file(file: &mut File, name: String, cache: &AppCache, config: &ServerConfig) -> Result<Self, Box<dyn Error>> {
         let metadata = Metadata::from_file(file)?;
         let file_id = metadata.file_id.clone();
         let links = Link::get_vec_from_meta(&metadata);
@@ -363,7 +365,7 @@ impl Notebook {
         let page_id_map = HashMap::from_iter(pages.iter().map(|page| (page.page_id.clone(), page.page_num - 1)));
 
         let titles = {
-            let mut titles = Title::get_vec_from_meta(&metadata, file, &pages)?;
+            let mut titles = Title::get_vec_from_meta(&metadata, file, &pages, cache.notebooks.get(&file_id), config)?;
             titles.sort();
 
             let mut ghost_titles = vec![];
