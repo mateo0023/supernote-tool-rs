@@ -19,7 +19,8 @@ pub mod error {
 
 mod ui;
 pub use io::load;
-pub use data_structures::Notebook;
+pub use data_structures::{Notebook, ServerConfig};
+pub use data_structures::cache::AppCache;
 pub use decoder::ColorMap;
 
 /// Starts the EGUI App (default behaviour)
