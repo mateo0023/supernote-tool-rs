@@ -95,7 +95,7 @@ pub fn export_multiple(notebooks: &[&Notebook], colormap: &ColorMap) -> Result<D
     Ok(doc)
 }
 
-fn to_pdf(notebook: &Notebook, colormap: &ColorMap) -> Result<Document, Box<dyn Error>> {
+pub fn to_pdf(notebook: &Notebook, colormap: &ColorMap) -> Result<Document, Box<dyn Error>> {
     let mut doc = Document::with_version("1.7");
     let base_page_id = doc.new_object_id();
 
@@ -370,7 +370,11 @@ fn page_to_commands(page: &Page, colormap: &ColorMap) -> Result<Content, Box<dyn
 }
 
 impl Notebook {
-    pub fn to_pdf(&self, colormap: &ColorMap) -> Result<Document, Box<dyn Error>> {
+    /// Will ensure the Titles are processed [`Notebook::process_titles()`]
+    /// and then create a pdf [Document], see
+    /// [`exporter::to_pdf()`](to_pdf)
+    pub fn to_pdf(&mut self, colormap: &ColorMap) -> Result<Document, Box<dyn Error>> {
+        self.process_titles();
         to_pdf(self, colormap)
     }
 }

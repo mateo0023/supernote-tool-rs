@@ -112,7 +112,8 @@ impl MyApp {
         if self.notebooks.len() < 2 || !self.app_cache.combine_pdfs {
             for (note, _) in &self.notebooks {
                 if let Some(path) = &self.out_folder {
-                    if let Err(e) = to_file(note.to_pdf(&self.colormap)?, path, &note.file_name) {
+                    use crate::exporter::to_pdf;
+                    if let Err(e) = to_file(to_pdf(note, &self.colormap)?, path, &note.file_name) {
                         self.out_err.get_or_insert(vec![])
                             .push(e);
                     }
@@ -291,17 +292,21 @@ impl eframe::App for MyApp {
                 // TitleHolder render
                 let mut title_bx = vec![];
                 for (_, holder) in self.notebooks.iter_mut() {
-                    ui.collapsing(holder.file_name.clone(), |ui| {
-                        let mut used = false;
-                        for title in holder.titles.iter_mut() {
-                            let text_boxes = title.show(ui, self.show_only_empty, &mut self.focused_id);
-                            if !text_boxes.is_empty() {
-                                used = true;
-                                title_bx.extend(text_boxes);
+                    if holder.is_empty() {
+                        ui.label(format!("File {} contains no titles", holder.file_name));
+                    } else {
+                        ui.collapsing(holder.file_name.clone(), |ui| {
+                            let mut used = false;
+                            for title in holder.titles.iter_mut() {
+                                let text_boxes = title.show(ui, self.show_only_empty, &mut self.focused_id);
+                                if !text_boxes.is_empty() {
+                                    used = true;
+                                    title_bx.extend(text_boxes);
+                                }
                             }
-                        }
-                        if !used {ui.label("All Titles are transcribed");}
-                    });
+                            if !used {ui.label("All Titles are transcribed");}
+                        });
+                    }
                 }
     
                 // Showing the image.
@@ -397,6 +402,11 @@ impl TitleHolder {
             //     },
             // }
         }
+    }
+
+    #[inline]
+    fn is_empty(&self) -> bool {
+        self.titles.is_empty()
     }
 }
 
