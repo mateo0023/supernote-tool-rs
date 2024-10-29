@@ -23,7 +23,7 @@ pub fn export_multiple(notebooks: &[&Notebook], colormap: &ColorMap) -> Result<D
 
     let file_map = {
         let mut map = HashMap::new();
-        notebooks.iter().for_each(|n| {map.insert(n.file_id.clone(), n);});
+        notebooks.iter().for_each(|n| {map.insert(n.file_id, n);});
         map
     };
 

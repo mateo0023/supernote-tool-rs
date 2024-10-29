@@ -12,7 +12,7 @@ pub type MetaMap = HashMap<String, Vec<String>>;
 pub struct Metadata {
     /// The version number, an 8-digit integer
     pub version: u32,
-    pub file_id: String,
+    pub file_id: u64,
     /// The [Footer] of the file, containing all the metadata of where the [header](Metadata::header) and [pages](Metadata::pages) are in the file
     pub footer: Footer,
     /// Contains a lot of metadata on device information and file status.

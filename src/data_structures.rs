@@ -50,7 +50,7 @@ pub struct Notebook {
     /// The file name (not including the extension)
     pub file_name: String,
     /// The ID used to identify the file, see [Metadata::file_id]
-    pub file_id: String,
+    pub file_id: u64,
     /// A list containing all the [Titles](Title)
     /// 
     /// Titles will be sorted by Page and then Position
@@ -129,7 +129,7 @@ pub enum LinkType {
     /// A link to the same file, containing:
     /// * Page Index
     /// * The other's [`file_id`](Notebook::file_id)
-    OtherFile{page_id: String, file_id: String},
+    OtherFile{page_id: String, file_id: u64},
     /// A link to a website, contains the link.
     WebLink{link: String},
 }
@@ -158,7 +158,7 @@ fn process_rect_to_corners(rect: Vec<u32>) -> Result<[u32; 4], DataStructureErro
 }
 
 /// Will hash the string using [DefaultHasher](std::hash::DefaultHasher).
-fn hash(content: &[u8]) -> u64 {
+pub fn hash(content: &[u8]) -> u64 {
     use std::hash::{DefaultHasher, Hasher as _};
 
     let mut hasher = DefaultHasher::new();
@@ -560,7 +560,7 @@ impl Link {
         }
     }
 
-    fn new(link_meta: &metadata::MetaMap, page_num: usize, file_id: &str) -> Result<Option<Self>, Box<dyn Error>> {
+    fn new(link_meta: &metadata::MetaMap, page_num: usize, file_id: &u64) -> Result<Option<Self>, Box<dyn Error>> {
         if Link::is_incoming(link_meta)? {
             return Ok(None);
         }
@@ -655,7 +655,7 @@ impl LinkType {
     const TO_PAGE: &'static str = "0";
     const TO_WEB: &'static str = "4";
     
-    pub fn from_meta(link_meta: &metadata::MetaMap, file_id: &str) -> Self {
+    pub fn from_meta(link_meta: &metadata::MetaMap, file_id: &u64) -> Self {
         let link_style = link_meta.get(Self::KEY_STYLE).unwrap()[0].as_str();
         // Link to website
         if link_style.eq(Self::TO_WEB) {
@@ -664,11 +664,11 @@ impl LinkType {
         // Is internal/external
         if link_style.eq(Self::TO_PAGE) {
             let page_id = link_meta.get("PAGEID").unwrap()[0].clone();
-            let to_file_id = link_meta.get(Self::KEY_FILE_ID).unwrap()[0].as_str();
+            let to_file_id = hash(link_meta.get(Self::KEY_FILE_ID).unwrap()[0].as_bytes());
 
             match to_file_id.eq(file_id) {
                 true => LinkType::SameFile { page_id },
-                false => LinkType::OtherFile { page_id, file_id: to_file_id.to_string() },
+                false => LinkType::OtherFile { page_id, file_id: to_file_id },
             }
         } else {
             todo!("Not implemented linking to files (without page info)")

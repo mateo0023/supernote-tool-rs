@@ -19,7 +19,7 @@ pub type NotebookCache = HashMap<u64, TitleCache>;
 #[derive(Default, Serialize, Deserialize)]
 pub struct AppCache {
     /// Maps from [file_id](Notebook::file_id) to [NotebookCache].
-    pub notebooks: HashMap<String, NotebookCache>,
+    pub notebooks: HashMap<u64, NotebookCache>,
     /// Wether to combina all the [Notebook]s into 
     /// a single pdf or export them separately.
     pub combine_pdfs: bool,
@@ -73,7 +73,7 @@ impl AppCache {
             // Either add new title settings or update
             // the existing one.
             match self.notebooks.contains_key(&note_id) {
-                true => if let Some(old_titles) = self.notebooks.insert(note_id.clone(), titles) {
+                true => if let Some(old_titles) = self.notebooks.insert(note_id, titles) {
                     let new_titles = self.notebooks.get_mut(&note_id).unwrap();
                     TitleCache::merge_list_into(new_titles, old_titles);
                 },
@@ -86,7 +86,7 @@ impl AppCache {
 
     /// Replaces the Cache data at the key ([file_id](Notebook::file_id) by the new
     /// [TitleCache]
-    pub fn update(&mut self, k: String, v: NotebookCache) {
+    pub fn update(&mut self, k: u64, v: NotebookCache) {
         self.notebooks.insert(k, v);
     }
 
@@ -102,7 +102,7 @@ impl AppCache {
                 false => false,
             });
         } else {
-            self.notebooks.insert(notebook.file_id.clone(), HashMap::new());
+            self.notebooks.insert(notebook.file_id, HashMap::new());
         }
     }
 
@@ -111,7 +111,7 @@ impl AppCache {
         if let Some(old_cache) = self.notebooks.get_mut(&notebook.file_id) {
             *old_cache = notebook.get_cache();
         } else {
-            self.notebooks.insert(notebook.file_id.clone(), notebook.get_cache());
+            self.notebooks.insert(notebook.file_id, notebook.get_cache());
         }
     }
 
@@ -122,7 +122,7 @@ impl AppCache {
         Ok(())
     }
 
-    pub fn update_title(&mut self, file_id: &str, title: TitleCache) {
+    pub fn update_title(&mut self, file_id: &u64, title: TitleCache) {
         if let Some(map) = self.notebooks.get_mut(file_id){ 
             map.insert(title.hash, title);
         }
@@ -169,7 +169,7 @@ impl From<AppCacheV1> for AppCache {
             for (hash, title) in notebook.into_iter() {
                 v.insert(hash, title.into());
             }
-            notebooks.insert(k, v);
+            notebooks.insert(super::hash(k.as_bytes()), v);
         }
         AppCache {
             notebooks,

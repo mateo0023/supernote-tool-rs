@@ -27,7 +27,7 @@ pub struct MyApp {
 
 #[derive(Default)]
 struct TitleHolder {
-    file_id: String,
+    file_id: u64,
     file_name: String,
     /// List of titles in the file.
     titles: Vec<TitleEditor>,
@@ -160,7 +160,7 @@ impl MyApp {
     /// in [Self::notebooks].
     fn update_cache_from_editor(&mut self) {
         for (_, holder) in &self.notebooks {
-            let (k, v) = holder.as_list();
+            let (k, v) = holder.get_cache();
             self.app_cache.update(k, v);
         }
     }
@@ -337,7 +337,7 @@ impl eframe::App for MyApp {
 impl TitleHolder {
     pub fn from_notebook(notebook: &Notebook, ui: &egui::Ui, ctx: &egui::Context) -> Self {
         let mut titles = TitleHolder {
-            file_id: notebook.file_id.clone(),
+            file_id: notebook.file_id,
             file_name: notebook.file_name.clone(),
             titles: vec![],
         };
@@ -382,9 +382,9 @@ impl TitleHolder {
         }
     }
 
-    pub fn as_list(&self) -> (String, NotebookCache) {
+    pub fn get_cache(&self) -> (u64, NotebookCache) {
         let list = self.titles.iter().flat_map(|t| t.as_cache_list()).map(|t| (t.hash, t)).collect();
-        (self.file_id.clone(), list)
+        (self.file_id, list)
     }
 
     fn add_title(&mut self, title: TitleEditor, lvl: TitleLevel) {
@@ -393,14 +393,6 @@ impl TitleHolder {
         } else {
             self.titles.last_mut().expect("Should already contain a home-title")
                 .add_child(title);
-            // match self.titles.last_mut() {
-            //     Some(t) => t.add_child(title),
-            //     None => {
-            //         let mut t = TitleEditor::create_blank(&title.page_id, TitleLevel::default());
-            //         t.add_child(title);
-            //         self.titles.push(t);
-            //     },
-            // }
         }
     }
 

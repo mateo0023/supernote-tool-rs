@@ -340,7 +340,7 @@ impl metadata::Metadata {
         };
         let pages = parse_pages(file, page_addrs)?;
 
-        let file_id = header.get("FILE_ID").unwrap()[0].clone();
+        let file_id = hash(header.get("FILE_ID").unwrap()[0].as_bytes());
 
         Ok(metadata::Metadata {
             version,
@@ -357,7 +357,7 @@ impl Notebook {
     /// a [file name](String)
     pub fn from_file(file: &mut File, name: String, cache: &AppCache, config: &ServerConfig) -> Result<Self, Box<dyn Error>> {
         let metadata = Metadata::from_file(file)?;
-        let file_id = metadata.file_id.clone();
+        let file_id = metadata.file_id;
         let links = Link::get_vec_from_meta(&metadata);
         let mut pages = Page::get_vec_from_meta(&metadata.pages, file);
         pages.sort_by_key(|p| p.page_num);
