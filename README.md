@@ -18,6 +18,7 @@ This project is a Rust-based GUI application designed to work with [Supernote](h
 ## Requirements
 - **Potrace C library**: This project requires the Potrace C library to be installed.
   - On MacOS `brew install potrace`
+- A [MyScript](https://www.myscript.com) subscription. With a `JSON` file in `./my_script_keys.json`. If you don't have that, it'll use the same API Key they use for the demos.
 
 For development only (not needed if using a pre-compiled binary)
 - **Rust 1.54** or later
