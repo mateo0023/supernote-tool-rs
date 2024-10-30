@@ -3,6 +3,9 @@
 debug/
 target/
 
+# Sensitive MyScript Development Keys
+my_script_keys.json
+
 # Folders for development only
 .vscode/
 test/
@@ -17,4 +20,3 @@ Cargo.lock
 # MSVC Windows builds of rustc generate these, which store debugging information
 *.pdb
 .DS_Store
-flamegraph.svg

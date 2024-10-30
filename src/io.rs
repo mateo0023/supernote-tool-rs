@@ -7,6 +7,8 @@ use std::io::{self, prelude::*, SeekFrom};
 use std::path::Path;
 
 use byteorder::{LittleEndian, ReadBytesExt};
+use cache::AppCache;
+use crate::data_structures::ServerConfig;
 use regex::Regex;
 
 use crate::data_structures::{*, metadata::{Metadata, MetaMap}};
@@ -78,11 +80,11 @@ const LAYER_KEYS: [&str; 5] = ["MAINLAYER", "LAYER1", "LAYER2", "LAYER3", "BGLAY
 
 
 /// Loads
-pub fn load(path: std::path::PathBuf) -> Result<Notebook, Box<dyn Error>> {
+pub fn load(path: std::path::PathBuf, cache: &AppCache, config: &ServerConfig) -> Result<Notebook, Box<dyn Error>> {
     let name = path.file_stem().unwrap().to_str().unwrap();
     let mut file = File::open(path.clone())?;
 
-    Notebook::from_file(&mut file, name.to_string())
+    Notebook::from_file(&mut file, name.to_string(), cache, config)
 }
 
 /// Looks at the beggining of the file where the file version should be.
@@ -101,7 +103,7 @@ fn read_file_version(file: &mut File) -> io::Result<Option<u32>> {
     file.seek(SeekFrom::Start(f_fmt::BYTES_BEFORE_VERSION_NUM))?;
     let mut buf = [0; f_fmt::VERSION_NUM_BYTE_LEN];
     if file.read(&mut buf)? < buf.len() {
-        todo!("File has less than {} bytes", buf.len())
+        return Err(io::ErrorKind::OutOfMemory.into());
     }
 
     let version = match std::str::from_utf8(&buf) {
@@ -338,7 +340,7 @@ impl metadata::Metadata {
         };
         let pages = parse_pages(file, page_addrs)?;
 
-        let file_id = header.get("FILE_ID").unwrap()[0].clone();
+        let file_id = hash(header.get("FILE_ID").unwrap()[0].as_bytes());
 
         Ok(metadata::Metadata {
             version,
@@ -352,10 +354,10 @@ impl metadata::Metadata {
 
 impl Notebook {
     /// Create a [Notebook] given an open `.note` file and 
-    /// a [file names](String)
-    pub fn from_file(file: &mut File, name: String) -> Result<Self, Box<dyn Error>> {
+    /// a [file name](String)
+    pub fn from_file(file: &mut File, name: String, cache: &AppCache, config: &ServerConfig) -> Result<Self, Box<dyn Error>> {
         let metadata = Metadata::from_file(file)?;
-        let file_id = metadata.file_id.clone();
+        let file_id = metadata.file_id;
         let links = Link::get_vec_from_meta(&metadata);
         let mut pages = Page::get_vec_from_meta(&metadata.pages, file);
         pages.sort_by_key(|p| p.page_num);
@@ -363,7 +365,7 @@ impl Notebook {
         let page_id_map = HashMap::from_iter(pages.iter().map(|page| (page.page_id.clone(), page.page_num - 1)));
 
         let titles = {
-            let mut titles = Title::get_vec_from_meta(&metadata, file)?;
+            let mut titles = Title::get_vec_from_meta(&metadata, file, &pages, cache.notebooks.get(&file_id), config)?;
             titles.sort();
 
             let mut ghost_titles = vec![];

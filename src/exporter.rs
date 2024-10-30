@@ -5,8 +5,8 @@ use crate::data_structures::*;
 use crate::decoder::{decode_separate, ColorMap, DecodedImage};
 use crate::error::DecoderError;
 
-const A4_WIDTH: i32 = crate::common::f_fmt::PAGE_WIDTH as i32;
-const A4_HEIGHT: i32 = crate::common::f_fmt::PAGE_HEIGHT as i32;
+const A4_WIDTH: u32 = crate::common::f_fmt::PAGE_WIDTH as u32;
+const A4_HEIGHT: u32 = crate::common::f_fmt::PAGE_HEIGHT as u32;
 
 mod potrace;
 
@@ -23,7 +23,7 @@ pub fn export_multiple(notebooks: &[&Notebook], colormap: &ColorMap) -> Result<D
 
     let file_map = {
         let mut map = HashMap::new();
-        notebooks.iter().for_each(|n| {map.insert(n.file_id.clone(), n);});
+        notebooks.iter().for_each(|n| {map.insert(n.file_id, n);});
         map
     };
 
@@ -95,7 +95,7 @@ pub fn export_multiple(notebooks: &[&Notebook], colormap: &ColorMap) -> Result<D
     Ok(doc)
 }
 
-fn to_pdf(notebook: &Notebook, colormap: &ColorMap) -> Result<Document, Box<dyn Error>> {
+pub fn to_pdf(notebook: &Notebook, colormap: &ColorMap) -> Result<Document, Box<dyn Error>> {
     let mut doc = Document::with_version("1.7");
     let base_page_id = doc.new_object_id();
 
@@ -252,8 +252,6 @@ fn add_toc(doc: &mut Document, titles: &[Title], page_ids: &[ObjectId], catalog_
         title_id_stack.push_back((new_id, title.title_level));
     }
 
-    println!();
-
     if let Some(Object::Dictionary(ref mut outlines_dict)) = doc.objects.get_mut(&outlines_id) {
         // Ensure /First and /Last are set
         if !outlines_dict.has(b"First") {
@@ -303,7 +301,7 @@ fn add_pages(pages_id: ObjectId, doc: &mut Document, notebook: &Notebook, colorm
 fn add_internal_link(
     doc: &mut Document,
     from_page_id: ObjectId,
-    rect: [i32; 4],
+    rect: [u32; 4],
     destination_page_id: ObjectId,
 ) -> Result<(), Box<dyn Error>> {
     // Define the GoTo action
@@ -372,7 +370,11 @@ fn page_to_commands(page: &Page, colormap: &ColorMap) -> Result<Content, Box<dyn
 }
 
 impl Notebook {
-    pub fn to_pdf(&self, colormap: &ColorMap) -> Result<Document, Box<dyn Error>> {
+    /// Will ensure the Titles are processed [`Notebook::process_titles()`]
+    /// and then create a pdf [Document], see
+    /// [`exporter::to_pdf()`](to_pdf)
+    pub fn to_pdf(&mut self, colormap: &ColorMap) -> Result<Document, Box<dyn Error>> {
+        self.process_titles();
         to_pdf(self, colormap)
     }
 }

@@ -1,3 +1,5 @@
+#[macro_use]
+mod macros;
 mod io;
 mod data_structures;
 mod decoder;
@@ -12,11 +14,13 @@ pub mod error {
     pub use crate::decoder::DecoderError;
     pub use crate::data_structures::DataStructureError;
     pub use crate::exporter::PotraceError;
+    pub use crate::data_structures::StrokeError;
 }
 
 mod ui;
 pub use io::load;
-pub use data_structures::Notebook;
+pub use data_structures::{Notebook, ServerConfig};
+pub use data_structures::cache::AppCache;
 pub use decoder::ColorMap;
 
 /// Starts the EGUI App (default behaviour)

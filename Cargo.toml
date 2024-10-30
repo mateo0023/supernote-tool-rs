@@ -1,6 +1,6 @@
 [package]
 name = "supernote-tool-rs"
-version = "1.0.2"
+version = "1.2.0"
 edition = "2021"
 cdescription = "A Rust-based GUI application designed to work with Supernote A5X files. It provides a streamlined way to render and export Supernote files to vector PDFs, adding features such as a Table of Contents (ToC) and link support."
 
@@ -26,13 +26,18 @@ debug = true
 byteorder = "1.5.0"
 eframe = "0.28.1"
 egui = "0.28.1"
+hex = "0.4.3"
+hmac = "0.12.1"
 image = "0.25.2"
 libc = "0.2.158"
 lopdf = "0.34.0"
 regex = "1.10.3"
+reqwest = "0.12.8"
 rfd = "0.15.0"
 serde = {version = "1.0.195", features = ["derive"]}
 serde_json = "1.0.111"
+sha2 = "0.10.8"
+tokio = {version = "1.40.0", features = ["full"]}
 
 [build-dependencies]
 bindgen = "0.70.1"

@@ -21,7 +21,7 @@ impl Bitmap {
     /// 
     /// # Returns
     /// * `Error`: if the given vector is not the size for an
-    /// Supernote A5X document.
+    ///   Supernote A5X document.
     pub fn from_vec(data: Vec<Word>) -> Result<Self, PotraceError> {
         // Calculate dy: words per scanline
         let bits_per_word = mem::size_of::<c_ulong>() * 8;
