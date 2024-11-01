@@ -1,18 +1,28 @@
 use std::collections::HashMap;
 use std::error::Error;
-use std::fs::File;
+use std::sync::Arc;
 
 use super::io::extract_key_and_read;
 
 pub mod metadata;
-mod stroke;
+pub mod stroke;
 pub mod cache;
 
 
+use futures::FutureExt;
+use lopdf::content::Content;
 pub use stroke::StrokeError;
+pub use stroke::TransciptionError;
 use cache::NotebookCache;
 use stroke::Stroke;
 pub use stroke::ServerConfig;
+use tokio::sync::RwLock;
+
+use crate::scheduler::FutureBox;
+use crate::exporter::page_to_commands;
+use crate::ColorMap;
+
+pub type NotebookReturn = (Notebook, Metadata, Vec<(u64, Vec<Stroke>)>);
 
 pub mod file_format_consts {
     pub const PAGE_HEIGHT: usize = 1872;
@@ -34,36 +44,27 @@ pub enum StructType {
     Link,
 }
 
-#[derive(Debug, Default, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub enum Transciption {
     Manual(String),
     MyScript(String),
-    #[serde(skip_deserializing)]
-    Processing(stroke::MyScriptProcess),
     #[default]
     None
 }
 
-
-#[derive(Serialize)]
 pub struct Notebook {
-    /// The file name (not including the extension)
-    pub file_name: String,
+    // /// The file name (not including the extension)
+    // pub file_name: String,
     /// The ID used to identify the file, see [Metadata::file_id]
     pub file_id: u64,
-    /// A list containing all the [Titles](Title)
-    /// 
-    /// Titles will be sorted by Page and then Position
-    /// to facilitate Bookmark Generation
-    pub titles: HashMap<u64, Title>,
     /// A list containing all the [Links](Link)
     pub links: Vec<Link>,
     /// A list containing all the [Pages](Page)
     /// 
     /// Pages are sorted
-    pub pages: Vec<Page>,
+    pub pages: Vec<PageOrCommand>,
     /// Map between [`PAGE_ID`](Page::page_id) and page indexes.
-    pub page_id_map: HashMap<String, usize>,
+    pub page_id_map: HashMap<u64, usize>,
     /// The notebook's starting page.
     /// 
     /// Used when chaining multiple [Notebook]s
@@ -71,7 +72,18 @@ pub struct Notebook {
     pub starting_page: usize,
 }
 
-#[derive(Serialize, Default)]
+#[derive(Clone, Default)]
+pub struct TitleCollection {
+    /// A list containing all the [Titles](Title)
+    /// 
+    /// Titles will be sorted by Page and then Position
+    /// to facilitate Bookmark Generation
+    pub titles: HashMap<u64, Title>,
+    pub note_id: u64,
+    pub note_name: String,
+}
+
+#[derive(Serialize, Clone, Default)]
 pub struct Title {
     /// The encoded content of the Title.
     /// 
@@ -91,14 +103,15 @@ pub struct Title {
     /// The page_index in the `.note` file.
     /// Needs to be shifted when exporting
     pub page_index: usize,
-    /// The vertical position on the page.
-    /// Same as [`coords[1]`](Self::coords)
-    pub position: u32,
+    pub page_id: u64,
+    // /// The vertical position on the page.
+    // /// Same as [`coords[1]`](Self::coords)
+    // pub position: u32,
     /// The rectangle defined by
     /// `[x_min, y_min, x_max, y_max]`
     pub coords: [u32; 4],
-    pub width: usize,
-    pub height: usize,
+    // pub width: usize,
+    // pub height: usize,
     pub name: Transciption,
 }
 #[derive(Debug, Serialize)]
@@ -108,12 +121,17 @@ pub struct Link {
     pub coords: [u32; 4],
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug)]
+pub enum PageOrCommand {
+    Page(Page),
+    Command(lopdf::content::Content)
+}
+
+#[derive(Debug)]
 pub struct Page {
-    pub totalpath: Vec<Stroke>,
     pub layers: Vec<Layer>,
     pub page_num: usize,
-    pub page_id: String,
+    pub page_id: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -125,11 +143,11 @@ pub struct Layer {
 #[derive(Debug, Serialize)]
 pub enum LinkType {
     /// A link to the same file, containing the page index
-    SameFile{page_id: String},
+    SameFile{page_id: u64},
     /// A link to the same file, containing:
     /// * Page Index
     /// * The other's [`file_id`](Notebook::file_id)
-    OtherFile{page_id: String, file_id: u64},
+    OtherFile{page_id: u64, file_id: u64},
     /// A link to a website, contains the link.
     WebLink{link: String},
 }
@@ -175,60 +193,32 @@ pub fn hash(content: &[u8]) -> u64 {
 // ###########################################################################################################
 
 impl Transciption {
-    pub fn begin(strokes: Vec<Stroke>, config: stroke::ServerConfig) -> Self {
-        Transciption::Processing(stroke::MyScriptProcess::new(strokes, config))
+    pub async fn transcribe(strokes: Vec<Stroke>, config: Arc<RwLock<stroke::ServerConfig>>) -> Self {
+        match stroke::transcribe(strokes, config).await {
+            Ok(s) => Transciption::MyScript(s),
+            Err(e) => {
+                println!("Transcription Error: {}", e);
+                Transciption::None
+            },
+        }
     }
     
-    pub fn from_stroke_and_cache(strokes: Vec<Stroke>, config: stroke::ServerConfig, other: &Transciption) -> Self {
+    pub async fn from_stroke_and_cache(strokes: Vec<Stroke>, config: Arc<RwLock<stroke::ServerConfig>>, other: &Transciption) -> Self {
         match other {
             Transciption::Manual(s) => Transciption::Manual(s.clone()),
             Transciption::MyScript(s) => Transciption::MyScript(s.clone()),
-            Transciption::Processing(_) => panic!("Cache should not be Processing"),
-            Transciption::None => Transciption::Processing(stroke::MyScriptProcess::new(strokes, config)),
+            Transciption::None => Self::transcribe(strokes, config).await,
         }
     }
 
     /// Will get the transcription.
     /// 
-    /// Both [`Processing`](Transciption::Processing)
-    /// and [`None`](Transciption::None) will return an empty `&str`
+    /// [`None`](Transciption::None) will return an empty `&str`
     pub fn get_or_default(&self) -> &str {
         match self {
             Transciption::Manual(txt) |
             Transciption::MyScript(txt) => txt.as_str(),
-            Transciption::Processing(_) |
             Transciption::None => "",
-        }
-    }
-
-    /// If it's process, it will finish processing.
-    /// Will set itself to the default if returns error.
-    /// 
-    /// # Returns
-    /// * `Option<Error>` which could be either a:
-    ///   * [reqwest::Error]
-    ///   * [serde_json::Error]
-    fn finish_process_or_default(&mut self) -> Option<Box<dyn Error>>{
-        if self.is_processing() {
-            if let Self::Processing(pr) = std::mem::take(self) {
-                match pr.block_and_parse() {
-                    Ok(res) => *self = Transciption::MyScript(res),
-                    Err(e) => {
-                        *self = Transciption::None;
-                        return Some(e);
-                    },
-                }
-            }
-        }
-        None
-    }
-
-    pub fn is_processing(&self) -> bool {
-        match self {
-            Transciption::Manual(_) |
-            Transciption::MyScript(_) |
-            Transciption::None => false,
-            Transciption::Processing(_) => true,
         }
     }
 
@@ -246,7 +236,6 @@ impl Transciption {
         match self {
             Transciption::Manual(s) => Some(Transciption::Manual(s.clone())),
             Transciption::MyScript(s) => Some(Transciption::MyScript(s.clone())),
-            Transciption::Processing(_) |
             Transciption::None => None,
         }
     }
@@ -258,7 +247,6 @@ impl Transciption {
             (Transciption::MyScript(s), Transciption::None) => Transciption::MyScript(s.clone()),
             (Transciption::MyScript(_), old_self) => old_self,
             (Transciption::None, old_self) => old_self,
-            (Transciption::Processing(_), _) => panic!("Shouldn't merge from Transcription::Processing"),
         }
     }
 
@@ -269,38 +257,63 @@ impl Transciption {
             (Transciption::MyScript(_), Transciption::None) => true,
             (Transciption::MyScript(_), _) => false,
             (Transciption::None, _) => false,
-            (Transciption::Processing(_), Transciption::None) => true,
-            (Transciption::Processing(_), _) => false,
         }
     }
 }
 
-impl Serialize for Transciption {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer {
-            use serde::ser::SerializeTupleVariant;
-            match self {
-                Transciption::Manual(s) => {
-                    let mut tv = serializer.serialize_tuple_variant("Transcription", 0, "Manual", 1)?;
-                    tv.serialize_field(s)?;
-                    tv.end()
-                },
-                Transciption::MyScript(s) => {
-                    let mut tv = serializer.serialize_tuple_variant("Transcription", 0, "MyScript", 1)?;
-                    tv.serialize_field(s)?;
-                    tv.end()
-                },
-                Transciption::Processing(_) |
-                Transciption::None => {
-                    serializer.serialize_tuple_variant("Transcription", 0, "None", 0)?
-                        .end()
-                },
+impl Notebook {
+    /// Create a [Notebook] given an open `.note` file and 
+    /// a [file name](String)
+    pub fn from_file(file: &[u8]) -> Result<NotebookReturn, Box<dyn Error>> {
+        let metadata = Metadata::from_file(file)?;
+        let file_id = metadata.file_id;
+        let links = Link::get_vec_from_meta(&metadata);
+        let mut pages = Page::get_vec_from_meta(&metadata.pages, file);
+        pages.sort_by_key(|p| p.0.page_num);
+
+        let page_id_map = HashMap::from_iter(pages.iter().map(|page| (page.1.0, page.0.page_num - 1)));
+
+        let (pages, page_data) = {
+            let mut pages_sep = Vec::with_capacity(pages.len());
+            let mut other = Vec::with_capacity(pages.len());
+            for (page, oth) in pages.into_iter() {
+                pages_sep.push(PageOrCommand::Page(page));
+                other.push(oth);
             }
+            (pages_sep, other)
+        };
+
+        Ok((Notebook {
+            file_id,
+            links,
+            pages,
+            page_id_map,
+            // file_name: name,
+            starting_page: 0,
+        }, metadata, page_data))
+    }
+
+    /// Will get the PDF page number given the `page_id` and the internal
+    /// [starting_page](Self::starting_page).
+    pub fn get_page_index_from_id(&self, page_id: u64) -> Option<usize> {
+        self.page_id_map.get(&page_id).copied().map(|idx| idx + self.starting_page)
+    }
+
+    pub async fn into_commands(mut self, colormap: ColorMap) -> Self {
+        use PageOrCommand::*;
+        self.pages = futures::future::join_all(
+            self.pages.into_iter().map(|page| -> FutureBox<Result<Content, Box<dyn Error>>> {
+                match page {
+                    Page(page) => Box::pin(page_to_commands(page, colormap)),
+                    Command(content) => Box::pin(async {Ok(content)}),
+                }
+            })
+        ).await.into_iter().map(|c| Command(c.unwrap())).collect();
+        self
     }
 }
 
-impl Notebook {
+impl TitleCollection {
     /// Update the title's [name](Title::name)
     /// field given the hash value and [new_title](Transciption) (from [AppCache])
     /// 
@@ -315,30 +328,48 @@ impl Notebook {
         }
     }
 
+    pub async fn transcribe_titles(
+        metadata: Metadata, data: Vec<u8>,
+        cache: Option<NotebookCache>, config: Arc<RwLock<ServerConfig>>,
+        page_data: Vec<(u64, Vec<Stroke>)>,
+        file_name: String,
+    ) -> Result<Self, Box<dyn Error>> {
+        let note_id = metadata.file_id;
+        let titles = {
+            let mut titles = Title::get_vec_from_meta(metadata, data, page_data, cache.as_ref(), config)
+                .await?;
+            titles.sort();
+
+            let mut ghost_titles = vec![];
+            let mut prev_level = TitleLevel::FileLevel;
+            for t in titles.iter() {
+                while (prev_level as u8) + 1 < t.title_level as u8 {
+                    prev_level = prev_level.add();
+                    let title = Title::new_ghost(prev_level, t);
+                    ghost_titles.push(title);
+                }
+                prev_level = t.title_level;
+            }
+            titles.extend(ghost_titles);
+
+            HashMap::from_iter(
+                titles.into_iter()
+                .map(|t| (t.hash, t))
+            )
+        };
+        Ok(Self {
+            titles,
+            note_id,
+            note_name: file_name,
+        })
+    }
+
     /// See [Title::cmp]
     pub fn get_sorted_titles(&self) -> Vec<&Title> {
         let mut titles: Vec<&Title> = self.titles.values().collect();
         titles.sort();
         titles
     }
-
-    /// Gets the page_id corresponding to the page at internal `index`
-    /// 
-    /// *NOT SHIFTED* by [starting_page](Self::starting_page)
-    /// 
-    /// # Return
-    /// * `Some(String)` with the [id](Page::page_id)
-    /// * `None` if the index is out of bounds.
-    pub fn get_page_id_from_internal(&self, index: usize) -> Option<String> {
-        self.pages.get(index).map(|page| page.page_id.clone())
-    }
-
-    /// Will get the PDF page number given the `page_id` and the internal
-    /// [starting_page](Self::starting_page).
-    pub fn get_page_index_from_id(&self, page_id: &str) -> Option<usize> {
-        self.page_id_map.get(page_id).copied().map(|idx| idx + self.starting_page)
-    }
-
     /// Computes the [`NotebookCache`] given the already-processed
     /// Title's [`Transcription`](Transciption).
     fn get_cache(&self) -> NotebookCache {
@@ -346,28 +377,9 @@ impl Notebook {
             .filter_map(|(&k, title)|
                 cache::TitleCache::form_title(
                     title,
-                    self.pages[title.page_index].page_id.clone()
                 )
                 .map(|c| (k, c))
             ).collect()
-    }
-
-    /// Loops over the titles and updates the transcriptions.
-    /// 
-    /// See [Transciption::finish_process_or_default()]
-    /// 
-    /// # Returns 
-    /// A vector with the errors in transcription/Deserializing,
-    /// if any
-    pub fn process_titles(&mut self) -> Option<Vec<Box<dyn Error>>> {
-        let errors: Vec<_> = self.titles.iter_mut().filter_map(|(_, title)|
-            title.name.finish_process_or_default()
-        ).collect();
-
-        match errors.is_empty() {
-            true => None,
-            false => Some(errors)
-        }
     }
 }
 
@@ -382,15 +394,21 @@ impl Title {
         }
     }
 
+    async fn transcribe(mut self, strokes: Vec<Stroke>, config: Arc<RwLock<ServerConfig>>) -> Self {
+        let new_name = Transciption::transcribe(strokes, config).await;
+        self.name = new_name;
+        self
+    }
+
     /// Creates a new *ghost* title.
     /// 
     /// These are the titles are the are missing in the tree structure.
-    pub fn new_ghost(title_level: TitleLevel, reference_t: &Title, page_id: &str) -> Self {
+    pub fn new_ghost(title_level: TitleLevel, reference_t: &Title) -> Self {
         let hash = {
             use std::hash::{DefaultHasher, Hasher as _};
     
             let mut hasher = DefaultHasher::new();
-            hasher.write(page_id.as_bytes());
+            hasher.write_u64(reference_t.page_id);
             hasher.write(&[title_level as u8]);
             hasher.finish()
         };
@@ -399,9 +417,10 @@ impl Title {
             hash,
             title_level,
             page_index: reference_t.page_index,
-            position: reference_t.position,
             coords: reference_t.coords,
-            ..Default::default()
+            page_id: reference_t.page_id,
+            content: None,
+            name: Transciption::None,
         }
     }
 
@@ -419,22 +438,42 @@ impl Title {
         }
     }
 
-    /// It loops over the titles in [Metadata::footer::titles](metadata::Footer::titles) and maps it to a [Title] by calling [Title::from_meta].
+    /// It loops over the titles in [Metadata::footer::titles](metadata::Footer::titles) and maps it to a [Title] by calling [Title::from_meta_no_transcript].
     /// 
     /// # Returns
     /// Will return an empty vector if [Metadata::footer::titles](metadata::Footer::titles) is [None], otherwise, it will return the mapped values 
     /// as specified above.
     /// 
     /// # Panics
-    /// It may panic when calling [Title::from_meta]
-    pub fn get_vec_from_meta(metadata: &Metadata, file: &mut File, pages: &[Page], cache: Option<&NotebookCache>, config: &ServerConfig) -> Result<Vec<Title>, Box<dyn Error>> {
+    /// It may panic when calling [Title::from_meta_no_transcript]
+    pub async fn get_vec_from_meta(metadata: Metadata, file: Vec<u8>, page_data: Vec<(u64, Vec<Stroke>)>, cache: Option<&NotebookCache>, config: Arc<RwLock<ServerConfig>>) -> Result<Vec<Title>, Box<dyn Error>> {
         match &metadata.footer.titles {
-            Some(v) => v.iter().map(|metadata| Title::from_meta(metadata, file, pages, cache, config)).collect(),
+            Some(v) => {
+                let mut f: Vec<_> = vec![];
+                for metadata in v.iter() {
+                    let title = Title::from_meta_no_transcript(metadata.clone(), &file, cache)?;
+                    f.push(
+                        if let Transciption::None = &title.name {
+                            let strokes = stroke::clone_strokes_contained(
+                                &page_data[title.page_index].1,
+                                title.coords
+                            );
+                            title.transcribe(strokes, config.clone()).boxed()
+                        } else {
+                            async {title}.boxed()
+                        }
+                    );
+                }
+                Ok(futures::future::join_all(f).await)
+            },
             None => Ok(vec![]),
         }
     }
 
-    /// Will create a [Title] from its [MetaMap]. Will clone `metadata` and read content from the [file](File)
+    /// Will create a [Title] from its [`MetaMap`](metadata::MetaMap). Will clone `metadata` and read content from the file.
+    /// 
+    /// It will **not** perform transcription, [`self.name`](Title::name) will be [`Transciption::None`]
+    /// if it's not in the [`NotebookCache`]
     /// 
     /// # Panics
     /// It will panic if the [MetaMap](metadata::MetaMap) doesn't contain the entry `"TITLERECTORI"` consisting of a list with one string.
@@ -446,21 +485,8 @@ impl Title {
     /// ],
     /// // ...
     /// ```
-    /// 
-    /// # Returns
-    /// ```rust
-    /// Title {
-    ///     metadata: MetaMap,
-    ///     content: Vec<u8>,
-    ///     page_number: None,
-    ///     position: u32,
-    /// }
-    /// ```
-    pub fn from_meta(metadata: &metadata::MetaMap, file: &mut File, pages: &[Page], cache: Option<&NotebookCache>, config: &ServerConfig) -> Result<Title, Box<dyn Error>> {
+    fn from_meta_no_transcript(metadata: metadata::MetaMap, file: &[u8], cache: Option<&NotebookCache>) -> Result<Title, Box<dyn Error>> {
         // Very long chain with possible errors. But it should be fine as long as the file is properly formatted
-        let page_pos = metadata.get("TITLERECTORI")
-            .ok_or(Box::new(DataStructureError::MissingField { t: StructType::Title, k: "TITLERECTORI".to_string() }))?[0]
-            .split(',').nth(1).unwrap().parse()?;
         let page_index = metadata.get("PAGE_NUMBER")
             .ok_or(DataStructureError::MissingField { t: StructType::Title, k: "PAGE_NUMBER".to_string() })?[0]
             .parse::<usize>()? - 1;
@@ -475,14 +501,12 @@ impl Title {
             }
             c
         };
-        let width = coords[2] as usize;
-        let height = coords[3] as usize;
         let coords = process_rect_to_corners(coords)?;
 
-        let title_level = TitleLevel::from_meta(metadata);
-        
-        let content = extract_key_and_read(file, metadata, "TITLEBITMAP")
-            .ok_or(DataStructureError::MissingField { t: StructType::Title, k: "TITLEBITMAP".to_string() })?;
+        let title_level = TitleLevel::from_meta(&metadata);
+
+        let content = Vec::from(extract_key_and_read(file, &metadata, "TITLEBITMAP")
+            .ok_or(DataStructureError::MissingField { t: StructType::Title, k: "TITLEBITMAP".to_string() })?);
         let hash = hash(&content);
 
         let name = match cache {
@@ -490,25 +514,21 @@ impl Title {
                 Some(cache) => match &cache.title {
                     Transciption::Manual(s) => Transciption::Manual(s.clone()),
                     Transciption::MyScript(s) => Transciption::MyScript(s.clone()),
-                    Transciption::Processing(_) => panic!("Cache should not contain processing"),
-                    Transciption::None => 
-                        Transciption::begin(pages[page_index].clone_strokes_contained(coords), config.clone()),
+                    Transciption::None => Transciption::None,
                 },
-                None => Transciption::begin(pages[page_index].clone_strokes_contained(coords), config.clone()),
+                None => Transciption::None,
             },
-            None => Transciption::begin(pages[page_index].clone_strokes_contained(coords), config.clone()),
+            None => Transciption::None,
         };
 
         Ok(Title {
             content: Some(content),
             hash,
             page_index,
-            position: page_pos,
             title_level,
             coords,
-            width,
-            height,
             name,
+            page_id: 0,
         })
     }
 
@@ -531,12 +551,12 @@ impl std::cmp::Eq for Title {}
 impl std::cmp::Ord for Title {
     /// Compare 2 [Title]s in the following order (going down if equal)
     /// 1. [page_index](Self::page_index)
-    /// 2. [position](Self::position)
+    /// 2. [position](Self::coords) (2nd element)
     /// 3. [title_level](Self::title_level)
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         use std::cmp::Ordering::Equal;
         match self.page_index.cmp(&other.page_index) {
-            Equal => match self.position.cmp(&other.position) {
+            Equal => match self.coords[1].cmp(&other.coords[1]) {
                 Equal => self.title_level.cmp(&other.title_level),
                 order => order,
             },
@@ -604,43 +624,47 @@ impl Link {
     }
 }
 
+impl PageOrCommand {
+    pub fn command(&self) -> &lopdf::content::Content {
+        match self {
+            PageOrCommand::Page(_) => panic!("Still not processed into commands"),
+            PageOrCommand::Command(content) => content,
+        }
+    }
+}
+
 impl Page {
     /// Given al vector of [page metadata](metadata::PageMeta) it will return a vector of [pages](Page).
-    pub fn get_vec_from_meta(metadata: &[metadata::PageMeta], file: &mut File) -> Vec<Page> {
+    pub fn get_vec_from_meta(metadata: &[metadata::PageMeta], file: &[u8]) -> Vec<(Page, (u64, Vec<Stroke>))> {
         metadata.iter().map(|meta| Page::from_meta(meta, file)).collect()
     }
 
     /// Given a [PageMeta](metadata::PageMeta) it returns a [Page].
-    pub fn from_meta(metadata: &metadata::PageMeta, file: &mut File) -> Self {
+    pub fn from_meta(metadata: &metadata::PageMeta, file: &[u8]) -> (Self, (u64, Vec<Stroke>)) {
         let paths = extract_key_and_read(file, &metadata.page_info, "TOTALPATH").unwrap();
-        Page {
-            totalpath: stroke::Stroke::process_page(paths).expect("Failed to process the strokes in page"),
+        let totalpath = stroke::Stroke::process_page(paths).expect("Failed to process the strokes in page");
+        let page_id = hash(metadata.page_info.get("PAGEID").unwrap()[0].as_bytes());
+        (Page {
             // recogn_file: extract_key_and_read(file, &metadata.page_info, "RECOGNFILE"),
             // recogn_text: extract_key_and_read(file, &metadata.page_info, "RECOGNTEXT"),
             layers: Layer::get_vec_fom_vec(&metadata.layers, file),
             page_num: metadata.page_info.get("PAGE_NUMBER").unwrap()[0].parse().unwrap(),
-            page_id: metadata.page_info.get("PAGEID").unwrap()[0].clone(),
-        }
-    }
-
-    /// Clone the [strokes](Stroke) fully contained in the rectangle defined by
-    /// `[x, y, width, height]`. Should be the same as [Title::coords].
-    fn clone_strokes_contained(&self, coords: [u32; 4]) -> Vec<Stroke>{
-        stroke::clone_strokes_contained(&self.totalpath, coords)
+            page_id,
+        }, (page_id, totalpath))
     }
 }
 
 impl Layer {
     /// Given a vector of layer [metadata](metadata::MetaMap), it retrns a vector of [Layer].
-    pub fn get_vec_fom_vec(layers: &[metadata::MetaMap], file: &mut File) -> Vec<Self> {
+    pub fn get_vec_fom_vec(layers: &[metadata::MetaMap], file: &[u8]) -> Vec<Self> {
         layers.iter().map(|meta| Layer::from_meta(meta, file)).collect()
     }
 
     /// Creates a layer purely by cloning [meta](metadata::MetaMap) and reading the [contents](Layer::content) with [extract_key_and_read].
-    pub fn from_meta(meta: &metadata::MetaMap, file: &mut File) -> Self {
+    pub fn from_meta(meta: &metadata::MetaMap, file: &[u8]) -> Self {
         Layer {
             is_background: meta.get("LAYERNAME").map(|n| n[0].eq("BGLAYER")).unwrap_or(false),
-            content: extract_key_and_read(file, meta, "LAYERBITMAP"),
+            content: extract_key_and_read(file, meta, "LAYERBITMAP").map(Vec::from),
         }
     }
 
@@ -663,7 +687,7 @@ impl LinkType {
         }
         // Is internal/external
         if link_style.eq(Self::TO_PAGE) {
-            let page_id = link_meta.get("PAGEID").unwrap()[0].clone();
+            let page_id = hash(link_meta.get("PAGEID").unwrap()[0].as_bytes());
             let to_file_id = hash(link_meta.get(Self::KEY_FILE_ID).unwrap()[0].as_bytes());
 
             match to_file_id.eq(file_id) {

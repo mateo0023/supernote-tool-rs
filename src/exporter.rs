@@ -17,7 +17,7 @@ use lopdf::content::Content;
 use lopdf::{dictionary, Document, Object, ObjectId, Stream};
 
 /// Exports the array of [Notebook] into a single [PDF document](Document).
-pub fn export_multiple(notebooks: &[&Notebook], colormap: &ColorMap) -> Result<Document, Box<dyn Error>> {
+pub async fn export_multiple(notebooks: Vec<Notebook>, title_cols: Vec<TitleCollection>) -> Result<Document, Box<dyn Error>> {
     let mut doc = Document::with_version("1.7");
     let base_page_id = doc.new_object_id();
 
@@ -36,14 +36,14 @@ pub fn export_multiple(notebooks: &[&Notebook], colormap: &ColorMap) -> Result<D
 
     let mut pages = vec![];
     for notebook in notebooks.iter() {
-        pages.extend_from_slice(&add_pages(base_page_id, &mut doc, notebook, colormap)?);
+        pages.extend_from_slice(&add_pages(base_page_id, &mut doc, notebook)?);
     }
 
     for notebook in notebooks.iter() {
         for link in &notebook.links {
             match &link.link_type {
                 LinkType::SameFile { page_id } => {
-                    let to_idx = notebook.get_page_index_from_id(page_id).unwrap();
+                    let to_idx = notebook.get_page_index_from_id(*page_id).unwrap();
                     add_internal_link(
                         &mut doc, pages[link.start_page + notebook.starting_page],
                         link.coords, pages[to_idx]
@@ -51,7 +51,7 @@ pub fn export_multiple(notebooks: &[&Notebook], colormap: &ColorMap) -> Result<D
                 },
                 // Link goes to into_note
                 LinkType::OtherFile { page_id, file_id  } => if let Some(&into_note) = file_map.get(file_id) {
-                    let to_idx = into_note.get_page_index_from_id(page_id).unwrap();
+                    let to_idx = into_note.get_page_index_from_id(*page_id).unwrap();
                     add_internal_link(
                         &mut doc, pages[link.start_page + notebook.starting_page],
                         link.coords, pages[to_idx]
@@ -63,9 +63,9 @@ pub fn export_multiple(notebooks: &[&Notebook], colormap: &ColorMap) -> Result<D
     }
 
     let mut titles = vec![];
-    for notebook in notebooks.iter() {
-        titles.push(Title::new_for_file(&notebook.file_name, notebook.starting_page));
-        titles.extend(notebook.get_sorted_titles().into_iter().map(|t| t.basic_for_toc(notebook.starting_page)));
+    for (notebook, title_col) in notebooks.iter().zip(title_cols.iter()) {
+        titles.push(Title::new_for_file(&title_col.note_name, notebook.starting_page));
+        titles.extend(title_col.get_sorted_titles().into_iter().map(|t| t.basic_for_toc(notebook.starting_page)));
     }
     // Add the table of contents to the document
     add_toc(&mut doc, &titles, &pages, catalog_id).map_err(|e| e.to_string())?;
@@ -95,7 +95,7 @@ pub fn export_multiple(notebooks: &[&Notebook], colormap: &ColorMap) -> Result<D
     Ok(doc)
 }
 
-pub fn to_pdf(notebook: &Notebook, colormap: &ColorMap) -> Result<Document, Box<dyn Error>> {
+pub async fn to_pdf(notebook: Notebook, titles: TitleCollection) -> Result<Document, Box<dyn Error>> {
     let mut doc = Document::with_version("1.7");
     let base_page_id = doc.new_object_id();
 
@@ -106,7 +106,7 @@ pub fn to_pdf(notebook: &Notebook, colormap: &ColorMap) -> Result<Document, Box<
         "Pages" => base_page_id,
     });
 
-    let pages = add_pages(base_page_id, &mut doc, notebook, colormap)?;
+    let pages = add_pages(base_page_id, &mut doc, &notebook)?;
 
     for link in &notebook.links {
         match &link.link_type {
@@ -126,7 +126,7 @@ pub fn to_pdf(notebook: &Notebook, colormap: &ColorMap) -> Result<Document, Box<
     // Add the table of contents to the document
     add_toc(
         &mut doc, 
-        &notebook.get_sorted_titles().into_iter()
+        &titles.get_sorted_titles().into_iter()
             .map(|t| t.basic_for_toc(0)).collect::<Vec<_>>(),
         &pages, catalog_id
     )?;
@@ -272,10 +272,10 @@ fn add_toc(doc: &mut Document, titles: &[Title], page_ids: &[ObjectId], catalog_
     Ok(())
 }
 
-fn add_pages(pages_id: ObjectId, doc: &mut Document, notebook: &Notebook, colormap: &ColorMap) -> Result<Vec<ObjectId>, Box<dyn Error>> {
+fn add_pages(pages_id: ObjectId, doc: &mut Document, notebook: &Notebook) -> Result<Vec<ObjectId>, Box<dyn Error>> {
     let mut page_commands = Vec::with_capacity(notebook.pages.len());
     for page in &notebook.pages {
-        page_commands.push(page_to_commands(page, colormap)?);
+        page_commands.push(page.command());
     }
 
     let mut pages: Vec<ObjectId> = Vec::with_capacity(page_commands.len());
@@ -351,7 +351,7 @@ fn add_internal_link(
 }
 
 /// Exports a given page to the PDF Vector Commands
-fn page_to_commands(page: &Page, colormap: &ColorMap) -> Result<Content, Box<dyn Error>> {
+pub async fn page_to_commands(page: Page, colormap: ColorMap) -> Result<Content, Box<dyn Error>> {
     use file_format_consts::{PAGE_HEIGHT, PAGE_WIDTH};
 
     let mut image = DecodedImage::default();
@@ -362,28 +362,20 @@ fn page_to_commands(page: &Page, colormap: &ColorMap) -> Result<Content, Box<dyn
         image += decode_separate(data, PAGE_WIDTH, PAGE_HEIGHT)?;
     }
 
-    potrace::trace_and_generate(image, colormap).map(|operations| {
+    potrace::trace_and_generate(image, &colormap).map(|operations| {
         Content {
             operations,
         }
     })
 }
 
-impl Notebook {
-    /// Will ensure the Titles are processed [`Notebook::process_titles()`]
-    /// and then create a pdf [Document], see
-    /// [`exporter::to_pdf()`](to_pdf)
-    pub fn to_pdf(&mut self, colormap: &ColorMap) -> Result<Document, Box<dyn Error>> {
-        self.process_titles();
-        to_pdf(self, colormap)
-    }
-}
-
 impl Title {
     pub fn render_bitmap(&self) -> Result<Option<Vec<u8>>, DecoderError> {
         match &self.content {
             Some(data) => {
-                let decoded = decode_separate(data, self.width, self.height)?;
+                let width = (self.coords[2] - self.coords[0]) as usize;
+                let height = (self.coords[3] - self.coords[1]) as usize;
+                let decoded = decode_separate(data, width, height)?;
                 Ok(Some(decoded.into_color(&ColorMap::default())))
             },
             None => Ok(None),

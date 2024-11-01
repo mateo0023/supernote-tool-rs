@@ -1,17 +1,17 @@
 //! Loads the data and metadata
 
-use std::collections::HashMap;
 use std::error::Error;
 use std::fs::File;
-use std::io::{self, prelude::*, SeekFrom};
+use std::io::{self, prelude::*};
 use std::path::Path;
 
-use byteorder::{LittleEndian, ReadBytesExt};
-use cache::AppCache;
-use crate::data_structures::ServerConfig;
 use regex::Regex;
 
-use crate::data_structures::{*, metadata::{Metadata, MetaMap}};
+use crate::data_structures::*;
+use metadata::{Metadata, MetaMap};
+use stroke::Stroke;
+
+pub type LoadResult = (Notebook, Metadata, Vec<u8>, Vec<(u64, Vec<Stroke>)>, String);
 
 pub mod f_fmt {
     //! It's the file format information.
@@ -79,12 +79,26 @@ pub mod f_fmt {
 const LAYER_KEYS: [&str; 5] = ["MAINLAYER", "LAYER1", "LAYER2", "LAYER3", "BGLAYER"];
 
 
-/// Loads
-pub fn load(path: std::path::PathBuf, cache: &AppCache, config: &ServerConfig) -> Result<Notebook, Box<dyn Error>> {
-    let name = path.file_stem().unwrap().to_str().unwrap();
-    let mut file = File::open(path.clone())?;
+/// Loads the file, creates a Notebook (without Titles).
+/// 
+/// # Returns
+/// * [`Notebook`] without [`Titles`](Title)
+/// * The notebook's [`Metadata`], so we can later create the `Titles`
+/// * A [`Vec<u8>`] with all the file's data.
+pub async fn load(path: std::path::PathBuf) -> Result<LoadResult, Box<dyn Error>> {
+    let name = path.file_stem().unwrap().to_str().unwrap().to_string();
+    let file_data = {
+        let mut file = File::open(path.clone())?;
+        
+        let mut file_data = Vec::with_capacity(file.metadata()?.len() as usize);
+        file.read_to_end(&mut file_data);
 
-    Notebook::from_file(&mut file, name.to_string(), cache, config)
+        file_data
+    };
+
+    let (note, meta, page_data) = Notebook::from_file(&file_data)?;
+
+    Ok((note, meta, file_data, page_data, name))
 }
 
 /// Looks at the beggining of the file where the file version should be.
@@ -99,25 +113,16 @@ pub fn load(path: std::path::PathBuf, cache: &AppCache, config: &ServerConfig) -
 /// # Context
 /// Note X generation devices begin with `noteSN_FILE_VER_` followed by an 8-digit
 /// number represented by UTF-8 characters
-fn read_file_version(file: &mut File) -> io::Result<Option<u32>> {
-    file.seek(SeekFrom::Start(f_fmt::BYTES_BEFORE_VERSION_NUM))?;
-    let mut buf = [0; f_fmt::VERSION_NUM_BYTE_LEN];
-    if file.read(&mut buf)? < buf.len() {
-        return Err(io::ErrorKind::OutOfMemory.into());
-    }
-
-    let version = match std::str::from_utf8(&buf) {
+fn read_file_version(file: &[u8]) -> Option<u32> {
+    let buf = &file[(f_fmt::BYTES_BEFORE_VERSION_NUM as usize)..(f_fmt::BYTES_BEFORE_VERSION_NUM as usize + f_fmt::VERSION_NUM_BYTE_LEN)];
+    let version = match std::str::from_utf8(buf) {
         Ok(s) => s.parse(),
         Err(err) => todo!(
             "Found error when parsing version number at start of file {:?}",
             err
         ),
     };
-
-    match version {
-        Ok(v) => Ok(Some(v)),
-        Err(_) => Ok(None),
-    }
+    version.ok()
 }
 
 /// Loads a block the size specified by the first [`f_fmt::ADDR_SIZE`] bytes after the address
@@ -128,7 +133,7 @@ fn read_file_version(file: &mut File) -> io::Result<Option<u32>> {
 ///
 /// # Panics
 /// Can occur if the regex used to search kewyords cannot be created.
-fn parse_meta_block(file: &mut File, addr: u64) -> io::Result<Option<MetaMap>> {
+fn parse_meta_block(file: &[u8], addr: usize) -> io::Result<Option<MetaMap>> {
     let meta = get_content_at_address(file, addr)?;
     let meta = String::from_utf8_lossy(&meta);
 
@@ -187,11 +192,11 @@ fn get_keyword_addresses(
 ///
 /// # Errors
 /// This function will ignore any I/O errors encountered
-fn parse_addresses_to_meta(file: &mut File, k_addrs: Vec<(f_fmt::AddrType, String)>) -> Vec<MetaMap> {
+fn parse_addresses_to_meta(file: &[u8], k_addrs: Vec<(f_fmt::AddrType, String)>) -> Vec<MetaMap> {
     k_addrs
         .iter()
         .filter_map(|(addr, page_num)|
-            parse_meta_block(file, *addr as u64).unwrap_or(None)
+            parse_meta_block(file, *addr as usize).unwrap_or(None)
                 .map(|mut map| {
                     map.insert("PAGE_NUMBER".to_string(), vec![page_num.clone()]);
                     map
@@ -201,15 +206,15 @@ fn parse_addresses_to_meta(file: &mut File, k_addrs: Vec<(f_fmt::AddrType, Strin
 }
 
 /// Does what it says
-fn get_all_meta_on_keyword(file: &mut File, meta: &MetaMap, keyword: f_fmt::MKeyword) -> Option<Vec<MetaMap>> {
+fn get_all_meta_on_keyword(file: &[u8], meta: &MetaMap, keyword: f_fmt::MKeyword) -> Option<Vec<MetaMap>> {
     get_keyword_addresses(meta, keyword).map(|k_addrs| parse_addresses_to_meta(file, k_addrs))
 }
 
 /// Goes through the page addresses getting their metadata and layer information
-fn parse_pages(file: &mut File, addrs: Vec<(f_fmt::AddrType, String)>) -> io::Result<Vec<metadata::PageMeta>> {
+fn parse_pages(file: &[u8], addrs: Vec<(f_fmt::AddrType, String)>) -> io::Result<Vec<metadata::PageMeta>> {
     let mut pages = Vec::with_capacity(addrs.len());
     for (addr, page_num) in addrs {
-        let page_info = parse_meta_block(file, addr as u64)?.map(|mut m| {
+        let page_info = parse_meta_block(file, addr as usize)?.map(|mut m| {
             m.insert("PAGE_NUMBER".to_string(), vec![page_num]);
             m
         }).unwrap();
@@ -228,7 +233,7 @@ fn parse_pages(file: &mut File, addrs: Vec<(f_fmt::AddrType, String)>) -> io::Re
 
         let layers: Vec<_> = layer_addrs
             .iter()
-            .filter_map(|&addr| match parse_meta_block(file, addr) {
+            .filter_map(|&addr| match parse_meta_block(file, addr as usize) {
                 Ok(v) => v,
                 Err(err) => todo!("Err ecountered parsing at {}\t{}", addr, err),
             })
@@ -247,27 +252,27 @@ fn parse_pages(file: &mut File, addrs: Vec<(f_fmt::AddrType, String)>) -> io::Re
 ///
 /// # Returns
 /// It returns a block
-fn get_content_at_address(file: &mut File, addr: u64) -> io::Result<Vec<u8>> {
+fn get_content_at_address(file: &[u8], addr: usize) -> io::Result<&[u8]> {
     if addr == 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "Read address was 0",
         ));
     }
-    file.seek(SeekFrom::Start(addr))?;
-    let block_size = file.read_u32::<LittleEndian>()?;
-    // Could use Vec::with_capactiy and the unsafe set_len for possibly quicker
-    // performance. But it's unsafe
-    let mut data = vec![0; block_size as usize];
-    file.read_exact(&mut data)?;
-    Ok(data)
+    let block_size = u32::from_le_bytes([
+        file[addr],
+        file[addr+1],
+        file[addr+2],
+        file[addr+3],
+    ]) as usize;
+    Ok(&file[addr+4..addr+4+block_size])
 }
 
 /// Will get the keyword (`key`) at the [MetaMap] and then read the content at that address from the `file` ([File]).
 /// 
 /// Turns all errors into [None].
-pub fn extract_key_and_read(file: &mut File, meta: &MetaMap, key: &str) -> Option<Vec<u8>> {
-    meta.get(key).and_then(|str_v| str_v[0].parse::<u64>().ok()).and_then(|addr| get_content_at_address(file, addr).ok())
+pub fn extract_key_and_read<'a>(file: &'a [u8], meta: &MetaMap, key: &str) -> Option<&'a [u8]> {
+    meta.get(key).and_then(|str_v| str_v[0].parse::<u64>().ok()).and_then(|addr| get_content_at_address(file, addr as usize).ok())
 }
 
 /// Saves the file to `path/name.pdf`.
@@ -284,10 +289,14 @@ pub fn to_file(mut doc: lopdf::Document, path: &Path, name: &str) -> Result<File
 // #######################################################################
     
 impl metadata::Footer {
-    pub fn from_file(file: &mut File) -> io::Result<Self> {
+    pub fn from_file(file: &[u8]) -> io::Result<Self> {
         // Parse the footer, it's address is on the last address of memory.
-        file.seek(SeekFrom::End(-(f_fmt::ADDR_SIZE as i64)))?;
-        let footer_addr = file.read_u32::<LittleEndian>()? as u64;
+        let footer_addr = u32::from_le_bytes([
+            file[file.len()-4],
+            file[file.len()-3],
+            file[file.len()-2],
+            file[file.len()-1],
+        ]) as usize;
 
         // Might need to have more robust checks if there are no metadata found
         // at the address
@@ -307,8 +316,8 @@ impl metadata::Footer {
 }
 
 impl metadata::Metadata {
-    pub fn from_file(file: &mut File) -> io::Result<Self> {
-        let version = match read_file_version(file)? {
+    pub fn from_file(file: &[u8]) -> io::Result<Self> {
+        let version = match read_file_version(file) {
             Some(v) => {
                 if v > f_fmt::SUPPORTED_VERSION {
                     return Err(io::ErrorKind::InvalidInput.into());
@@ -329,7 +338,7 @@ impl metadata::Metadata {
             .unwrap()
             .parse()
             .unwrap();
-        let header = match parse_meta_block(file, header_addr)? {
+        let header = match parse_meta_block(file, header_addr as usize)? {
             Some(h) => h,
             None => return Err(io::ErrorKind::InvalidData.into()),
         };
@@ -352,50 +361,3 @@ impl metadata::Metadata {
     }
 }
 
-impl Notebook {
-    /// Create a [Notebook] given an open `.note` file and 
-    /// a [file name](String)
-    pub fn from_file(file: &mut File, name: String, cache: &AppCache, config: &ServerConfig) -> Result<Self, Box<dyn Error>> {
-        let metadata = Metadata::from_file(file)?;
-        let file_id = metadata.file_id;
-        let links = Link::get_vec_from_meta(&metadata);
-        let mut pages = Page::get_vec_from_meta(&metadata.pages, file);
-        pages.sort_by_key(|p| p.page_num);
-
-        let page_id_map = HashMap::from_iter(pages.iter().map(|page| (page.page_id.clone(), page.page_num - 1)));
-
-        let titles = {
-            let mut titles = Title::get_vec_from_meta(&metadata, file, &pages, cache.notebooks.get(&file_id), config)?;
-            titles.sort();
-
-            let mut ghost_titles = vec![];
-            let mut prev_level = TitleLevel::FileLevel;
-            for t in titles.iter() {
-                let page_id = &pages[t.page_index].page_id;
-
-                while (prev_level as u8) + 1 < t.title_level as u8 {
-                    prev_level = prev_level.add();
-                    let title = Title::new_ghost(prev_level, t, page_id);
-                    ghost_titles.push(title);
-                }
-                prev_level = t.title_level;
-            }
-            titles.extend(ghost_titles);
-
-            HashMap::from_iter(
-                titles.into_iter()
-                .map(|t| (t.hash, t))
-            )
-        };
-
-        Ok(Notebook {
-            file_id,
-            titles,
-            links,
-            pages,
-            page_id_map,
-            file_name: name,
-            starting_page: 0,
-        })
-    }
-}

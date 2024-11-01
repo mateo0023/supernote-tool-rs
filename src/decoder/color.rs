@@ -30,7 +30,7 @@ const COLORCODE_MARKER_DARK_GRAY: u8 = 0x9E;
 /// The color Code that corresponds to MARKER_GRAY
 const COLORCODE_MARKER_GRAY: u8 = 0xCA;
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct ColorMap {
     black: ColorType,
     darkgray: ColorType,

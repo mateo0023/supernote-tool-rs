@@ -3,7 +3,8 @@
 use serde::{Serialize, Deserialize};
 use std::{collections::HashMap, error::Error, path::PathBuf};
 
-use super::{Notebook, Title, Transciption};
+use crate::macros::Upgradable;
+use super::{Title, TitleCollection, Transciption};
 
 /// Is what's mapped within each
 /// [notebook's cache](AppCache::notebooks).
@@ -14,15 +15,18 @@ pub type NotebookCache = HashMap<u64, TitleCache>;
 
 /// Will hold the settings for all the notebooks.
 /// 
-/// Maps the [`notebook_id`](Notebook::file_id) to the 
+/// Maps the [`notebook_id`](super::Notebook::file_id) to the 
 /// map between [`Title::hash`](super::Title::hash) and [`TitleCache`].
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Default, Clone, Serialize, Deserialize)]
 pub struct AppCache {
-    /// Maps from [file_id](Notebook::file_id) to [NotebookCache].
+    /// Maps from [file_id](super::Notebook::file_id) to [`NotebookCache`].
     pub notebooks: HashMap<u64, NotebookCache>,
-    /// Wether to combina all the [Notebook]s into 
-    /// a single pdf or export them separately.
-    pub combine_pdfs: bool,
+}
+
+#[derive(Deserialize)]
+struct AppCacheV2 {
+    notebooks: HashMap<String, HashMap<u64, TitleCacheV2>>,
+    combine_pdfs: bool,
 }
 
  /// The old version of the [AppCache]
@@ -38,13 +42,20 @@ struct AppCacheV1 {
 /// Will be used to store the relevant information
 /// on the title. Will check for page_id and location
 /// of the title only.
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TitleCache {
     /// The corrected title.
     pub title: Transciption,
-    /// The Page Id from the Notebook
-    pub page_id: String,
+    /// The hash of the Page Id from the Notebook.
+    pub page_id: u64,
     /// The hash value of the [content](Title::content).
+    pub hash: u64,
+}
+
+#[derive(Deserialize)]
+struct TitleCacheV2 {
+    pub title: Transciption,
+    pub page_id: String,
     pub hash: u64,
 }
 
@@ -60,15 +71,17 @@ struct TitleCacheV1 {
 }
 
 impl AppCache {
-    /// Load an AppCache from a path and merge it into itself.
-    pub fn merge_from_path(&mut self, path: &PathBuf) -> Result<(), Box<dyn Error>> {
-        let cache: Self = match serde_json::from_reader(std::fs::File::open(path)?) {
-            Ok(c) => c,
-            Err(_) => serde_json::from_reader::<_, AppCacheV1>(std::fs::File::open(path)?)?.into(),
-        };
+    /// Load an AppCache from a path.
+    pub async fn from_path(path: PathBuf) -> Result<AppCache, Box<dyn Error>> {
+        use std::io::Read;
+        let mut text = String::new();
+        std::fs::File::open(&path)?.read_to_string(&mut text)?;
+        let cache = upgrade_or_deserialize!(text.as_str(), AppCacheV1, AppCacheV2, AppCache);
+        cache.ok_or("Failed to deserialize".into())
+    }
         
-        self.combine_pdfs = cache.combine_pdfs;
-
+    /// Merges an AppCache into itself.
+    pub fn merge(&mut self, cache: AppCache) {
         for (note_id, titles) in cache.notebooks {
             // Either add new title settings or update
             // the existing one.
@@ -80,8 +93,6 @@ impl AppCache {
                 false => {self.notebooks.insert(note_id, titles);},
             }
         }
-
-        Ok(())
     }
 
     /// Replaces the Cache data at the key ([file_id](Notebook::file_id) by the new
@@ -92,8 +103,8 @@ impl AppCache {
 
     /// It updates the cached titles in the [notebook](Notebook) and removes
     /// the ones no longer existing from [AppCache].
-    pub fn sync_w_notebook(&mut self, notebook: &mut Notebook) {
-        if let Some(old_cache) = self.notebooks.get_mut(&notebook.file_id) {
+    pub fn sync_w_notebook(&mut self, notebook: &mut TitleCollection) {
+        if let Some(old_cache) = self.notebooks.get_mut(&notebook.note_id) {
             old_cache.retain(|k, c| match notebook.titles.contains_key(k) {
                 true => {
                     notebook.update_title(*k, &c.title);
@@ -102,16 +113,16 @@ impl AppCache {
                 false => false,
             });
         } else {
-            self.notebooks.insert(notebook.file_id, HashMap::new());
+            self.notebooks.insert(notebook.note_id, HashMap::new());
         }
     }
 
-    /// Replaces the existing cache with [Notebook::get_cache()]
-    pub fn update_from_notebook(&mut self, notebook: &Notebook) {
-        if let Some(old_cache) = self.notebooks.get_mut(&notebook.file_id) {
+    /// Replaces the existing cache with [TitleCollection::get_cache()]
+    pub fn update_from_notebook(&mut self, notebook: &TitleCollection) {
+        if let Some(old_cache) = self.notebooks.get_mut(&notebook.note_id) {
             *old_cache = notebook.get_cache();
         } else {
-            self.notebooks.insert(notebook.file_id, notebook.get_cache());
+            self.notebooks.insert(notebook.note_id, notebook.get_cache());
         }
     }
 
@@ -131,11 +142,11 @@ impl AppCache {
 }
 
 impl TitleCache {
-    pub fn form_title(title: &Title, page_id: String) -> Option<Self> {
+    pub fn form_title(title: &Title) -> Option<Self> {
         title.name.get_clone_for_cache()
             .map(|transcription| TitleCache {
                 title: transcription,
-                page_id,
+                page_id: title.page_id,
                 hash: title.hash,
             })
     }
@@ -161,7 +172,21 @@ impl TitleCache {
     }
 }
 
-impl From<AppCacheV1> for AppCache {
+impl From<AppCacheV2> for AppCache {
+    fn from(value: AppCacheV2) -> Self {
+        let i = value.notebooks.into_iter()
+            .map(|(k, v)| (
+                super::hash(k.as_bytes()),
+                v.into_iter().map(|(k, v)| (k, v.into()))
+                    .collect()
+            ));
+        AppCache {
+            notebooks: HashMap::from_iter(i)
+        }
+    }
+}
+
+impl From<AppCacheV1> for AppCacheV2 {
     fn from(value: AppCacheV1) -> Self {
         let mut notebooks = HashMap::with_capacity(value.notebooks.capacity());
         for (k, notebook) in value.notebooks.into_iter() {
@@ -169,18 +194,28 @@ impl From<AppCacheV1> for AppCache {
             for (hash, title) in notebook.into_iter() {
                 v.insert(hash, title.into());
             }
-            notebooks.insert(super::hash(k.as_bytes()), v);
+            notebooks.insert(k, v);
         }
-        AppCache {
+        AppCacheV2 {
             notebooks,
             combine_pdfs: value.combine_pdfs,
         }
     }
 }
 
-impl From<TitleCacheV1> for TitleCache {
-    fn from(value: TitleCacheV1) -> Self {
+impl From<TitleCacheV2> for TitleCache {
+    fn from(value: TitleCacheV2) -> Self {
         TitleCache {
+            title: value.title,
+            page_id: super::hash(value.page_id.as_bytes()),
+            hash: value.hash,
+        }
+    }
+}
+
+impl From<TitleCacheV1> for TitleCacheV2 {
+    fn from(value: TitleCacheV1) -> Self {
+        TitleCacheV2 {
             title: match value.title {
                 Some(txt) => Transciption::Manual(txt),
                 None => Transciption::None,

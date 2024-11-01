@@ -9,7 +9,7 @@ use serde::Serialize;
 
 mod my_script;
 
-pub use my_script::{MyScriptProcess, ServerConfig};
+pub use my_script::{ServerConfig, transcribe, TransciptionError};
 
 use crate::common::f_fmt;
 
@@ -233,7 +233,7 @@ impl Stroke {
         }), final_ref))
     }
 
-    pub fn process_page(data: Vec<u8>) -> Result<Vec<Self>, StrokeError> {
+    pub fn process_page(data: &[u8]) -> Result<Vec<Self>, StrokeError> {
         let (path_count, mut data) = get_len(&data).map_err(|_| StrokeError::TooShort)?;
         let mut paths = Vec::with_capacity(path_count);
 

@@ -3,26 +3,26 @@ use std::path::PathBuf;
 
 use rfd::FileDialog;
 
-use crate::data_structures::{Notebook, Title, TitleLevel, Transciption, ServerConfig};
+use crate::data_structures::{ServerConfig, Title, TitleCollection, TitleLevel, Transciption};
 use crate::decoder::ColorMap;
 use crate::error::*;
-use crate::exporter::export_multiple;
-use crate::io::to_file;
 use crate::data_structures::cache::*;
+use crate::scheduler::*;
 
 pub mod icon;
 
 pub struct MyApp {
-    app_cache: AppCache,
     server_config: ServerConfig,
-    notebooks: Vec<(Notebook, TitleHolder)>,
-    colormap: ColorMap,
+    scheduler: Scheduler,
+    notebooks: Vec<(TitleCollection, TitleHolder)>,
     out_folder: Option<PathBuf>,
     out_err: Option<Vec<Box<dyn Error>>>,
     out_name: String,
     settings_path: Option<PathBuf>,
     show_only_empty: bool,
     focused_id: Option<egui::Id>,
+    combine_pdfs: bool,
+    porcess_msgs: Vec<String>,
 }
 
 #[derive(Default)]
@@ -42,7 +42,7 @@ pub struct TitleEditor {
     /// The hash value of the content (encoded).
     hash: u64,
     /// The page_id on the notebook.
-    page_id: String,
+    page_id: u64,
     /// Whether it was edited by the user, ever (it was in Cache).
     was_edited: bool,
 }
@@ -59,22 +59,18 @@ pub fn add_image(bitmap: &[u8], width: usize, height: usize, hash: u64, ctx: &eg
 impl MyApp {
     pub fn new() -> Self {
         MyApp {
+            scheduler: Scheduler::new(),
             notebooks: vec![],
             server_config: ServerConfig::from_path_or_default("./my_script_keys.json"),
-            colormap: ColorMap::default(),
             out_folder: None,
             out_err: None,
-            app_cache: AppCache::default(),
             out_name: String::new(),
             settings_path: None,
             show_only_empty: false,
             focused_id: None,
+            combine_pdfs: true,
+            porcess_msgs: vec![],
         }
-    }
-
-    /// Adds error to [out_err](Self::out_err).
-    fn add_err(&mut self, e: Box<dyn Error>) {
-        self.out_err.get_or_insert(vec![]).push(e);
     }
 
     /// Adds a notebook to the app.
@@ -82,72 +78,47 @@ impl MyApp {
     /// 1. Update the cache & notebook (see [AppCache::load_or_add]).
     /// 2. Create the [title editors](TitleHolder).
     /// 3. Shift the pages of the notebooks, in case of merge when exporting.
-    pub fn add_notebook(&mut self, mut notebook: Notebook, ui: &egui::Ui, ctx: &egui::Context) -> Result<(), Box<dyn Error>> {
-        notebook.process_titles();
-        self.app_cache.update_from_notebook(&notebook);
+    pub fn add_notebook(&mut self, notebook: TitleCollection, ui: &egui::Ui, ctx: &egui::Context) {
         let new_titles = TitleHolder::from_notebook(&notebook, ui, ctx);
         
         self.notebooks.push((notebook, new_titles));
-        self.notebooks.sort_by_cached_key(|n| n.0.file_name.clone());
-
-        let mut page = 0;
-        for (n, _) in self.notebooks.iter_mut() {
-            n.starting_page = page;
-            page += n.pages.len();
-        }
-
-        Ok(())
+        self.notebooks.sort_by_cached_key(|n| n.0.note_name.clone());
     }
 
     /// Will update the titles and render the [notebook(s)](Self::notebooks)
     /// into a PDF (or PDFs).
-    fn package_and_export(&mut self) -> Result<(), Box<dyn Error>> {
+    fn package_and_export(&mut self) {
         self.update_cache_from_editor();
         if let Some(p) = self.settings_path.as_ref() {
-            self.process_result(self.app_cache.save_to(p));
+            self.scheduler.save_cache(p.clone());
         }
 
         self.update_note_from_holder();
 
-        if self.notebooks.len() < 2 || !self.app_cache.combine_pdfs {
-            for (note, _) in &self.notebooks {
-                if let Some(path) = &self.out_folder {
-                    use crate::exporter::to_pdf;
-                    if let Err(e) = to_file(to_pdf(note, &self.colormap)?, path, &note.file_name) {
-                        self.out_err.get_or_insert(vec![])
-                            .push(e);
-                    }
+        if self.notebooks.len() < 2 || !self.combine_pdfs {
+            if let Some(path) = &self.out_folder {
+                let mut notes = vec![];
+                let mut paths = vec![];
+                for (note, _) in &self.notebooks {
+                    let new_path = path.join(format!("{}.pdf", note.note_name));
+                    notes.push(note.clone());
+                    paths.push(new_path);
                 }
+                self.scheduler.save_notebooks(
+                    notes,
+                    ExportSettings::Seprate(paths)
+                );
             }
         } else if let Some(path) = &self.out_folder {
-            self.process_result(
-                to_file(
-                    export_multiple(
-                        &self.notebooks.iter().map(|(n, _)| n).collect::<Vec<_>>(),
-                        &self.colormap
-                    )?, path, &self.out_name
-                )
+            self.scheduler.save_notebooks(
+                self.notebooks.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>(),
+                ExportSettings::Merged(path.join(format!("{}.pdf", self.out_name)))
             );
         }
-        
-        Ok(())
     }
 
-    /// Updates the [Self::notebooks] (the [Notebook] and [TitleHolder])
-    /// from [Self::app_cache].
-    /// 
-    /// Should be called only after loading new [cache](AppCache).
-    fn update_note_from_cache(&mut self) {
-        for (notebook, holder) in self.notebooks.iter_mut() {
-            let title_cache = self.app_cache.notebooks.get(&notebook.file_id).unwrap();
-            for (&k, cache) in title_cache {
-                notebook.update_title(k, &cache.title);
-            }
-            holder.update_editor(notebook);
-        }
-    }
-
-    /// Will update the [notebooks](Notebook) based on the content in the [TitleHolder].
+    /// Will update the [notebooks](TitleCollection)
+    /// based on the content in the [TitleHolder].
     fn update_note_from_holder(&mut self) {
         for (notebook, holder) in self.notebooks.iter_mut() {
             for title in holder.titles.iter() {
@@ -156,24 +127,12 @@ impl MyApp {
         }
     }
 
-    /// Updates [Self::app_cache] from the [TitleEditor]s
+    /// Updates app_cache from the [TitleEditor]s
     /// in [Self::notebooks].
     fn update_cache_from_editor(&mut self) {
         for (_, holder) in &self.notebooks {
             let (k, v) = holder.get_cache();
-            self.app_cache.update(k, v);
-        }
-    }
-
-    /// Essentially works as a [Result::ok] but saves the [Err] to
-    /// [out_err](Self::out_err) by calling [self.add_err(e)](Self::add_err).
-    fn process_result<T>(&mut self, r: Result<T, Box<dyn Error>>) -> Option<T> {
-        match r {
-            Ok(o) => Some(o),
-            Err(e) => {
-                self.add_err(e);
-                None
-            },
+            self.scheduler.update_cache(k, v);
         }
     }
 }
@@ -186,14 +145,7 @@ impl eframe::App for MyApp {
                 ui.vertical(|ui| {
                     if ui.button("Add File(s)").clicked() {
                         if let Some(path_list) = FileDialog::new().add_filter("Supernote File", &["note"]).pick_files() {
-                            for file_p in path_list {
-                                self.process_result(
-                                    crate::io::load(file_p, &self.app_cache, &self.server_config)
-                                ).and_then(|n| {
-                                    let r = self.add_notebook(n, ui, ctx);
-                                    self.process_result(r)
-                                });
-                            }
+                            self.scheduler.load_notebooks(path_list, self.server_config.clone());
                         }
                     }
 
@@ -215,23 +167,14 @@ impl eframe::App for MyApp {
                     }
 
                     if self.out_folder.is_some() && !self.notebooks.is_empty() && ui.button("Export to PDF").clicked() {
-                        if let Err(e) = self.package_and_export() {
-                            self.add_err(e);
-                        }
+                        self.package_and_export();
                     }
                 });
 
                 ui.vertical(|ui| {
                     if ui.button("Load Cache").clicked() {
-                        if let Some(paths) = FileDialog::new().add_filter("Settings", &["json"]).pick_files() {
-                            self.update_cache_from_editor();
-                            for file_p in paths {
-                                let file_p = self.settings_path.insert(file_p);
-                                if let Err(e) = self.app_cache.merge_from_path(file_p) {
-                                    self.add_err(e);
-                                }
-                            }
-                            self.update_note_from_cache();
+                        if let Some(path) = FileDialog::new().add_filter("Settings", &["json"]).pick_file() {
+                            self.scheduler.load_cache(path)
                         }
                     }
     
@@ -249,15 +192,58 @@ impl eframe::App for MyApp {
                             None => FileDialog::new().add_filter("JSON", &["json"]),
                         };
                         if let Some(out_path) = file_dialog.save_file() {
-                            self.update_cache_from_editor();
-                            if let Err(e) = self.app_cache.save_to(&out_path) {
-                                self.add_err(e);
-                            }
+                            self.scheduler.save_cache(out_path.clone());
                             self.settings_path = Some(out_path);
                         }
                     }
                 });
             });
+
+            if let Some(msg) = self.scheduler.check_update() {
+                match msg {
+                    SchedulerResponse::NotebookPartLoaded(name) => self.porcess_msgs.push(
+                        format!("Finished loading {}, now transcribing", name)
+                    ),
+                    SchedulerResponse::NotebookFullLoaded(notebook) => {
+                        self.add_notebook(notebook, ui, ctx);
+                    },
+                    SchedulerResponse::FileSaved(path_buf) => {
+                        self.porcess_msgs.push(format!("Saved PDF to {}", path_buf.file_name().unwrap().to_str().unwrap()));
+                    },
+                    SchedulerResponse::CacheLoaded => {
+                        self.porcess_msgs.push("Loaded cache".to_string());
+                    },
+                    SchedulerResponse::NotebookFailedToLoad(err) => {
+                        self.porcess_msgs.push(format!("Notebook Failed to load w {}", err));
+                    },
+                    SchedulerResponse::TranscriptError(vec) => {
+                        self.porcess_msgs.extend(
+                            vec.into_iter().map(|e| e.to_string())
+                        );
+                    },
+                    SchedulerResponse::CacheLoadFailed(e) => {
+                        self.porcess_msgs.push(format!(
+                            "Cache failed to load with {}", e
+                        ));
+                    },
+                    SchedulerResponse::ExportFailed(e) => {
+                        self.porcess_msgs.push(format!(
+                            "Exporting documents failed with {}", e
+                        ));
+                    },
+                }
+            }
+
+            if !self.porcess_msgs.is_empty() {
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        for lbl in &self.porcess_msgs {ui.label(lbl);}
+                    });
+                    if ui.button("Clear Messages").clicked() {
+                        self.porcess_msgs.clear();
+                    }
+                });
+            }
 
             ui.horizontal(|ui| {
                 if ui.checkbox(&mut self.show_only_empty, "Only Show Empty Titles").changed() && !self.show_only_empty {
@@ -265,8 +251,8 @@ impl eframe::App for MyApp {
                 }
                 // Combine checkmark
                 if self.notebooks.len() > 1 {
-                    ui.checkbox(&mut self.app_cache.combine_pdfs, "Combine Notebooks?");
-                    if self.app_cache.combine_pdfs {
+                    ui.checkbox(&mut self.combine_pdfs, "Combine Notebooks?");
+                    if self.combine_pdfs {
                         ui.text_edit_singleline(&mut self.out_name);
                     }
                 }
@@ -335,10 +321,10 @@ impl eframe::App for MyApp {
 }
 
 impl TitleHolder {
-    pub fn from_notebook(notebook: &Notebook, ui: &egui::Ui, ctx: &egui::Context) -> Self {
+    pub fn from_notebook(notebook: &TitleCollection, ui: &egui::Ui, ctx: &egui::Context) -> Self {
         let mut titles = TitleHolder {
-            file_id: notebook.file_id,
-            file_name: notebook.file_name.clone(),
+            file_id: notebook.note_id,
+            file_name: notebook.note_name.clone(),
             titles: vec![],
         };
         titles.create_editors(notebook, ui, ctx);
@@ -346,18 +332,17 @@ impl TitleHolder {
     }
 
     /// Creates the [TitleEditor]s from the given [Notebook].
-    fn create_editors(&mut self, notebook: &Notebook, ui: &egui::Ui, ctx: &egui::Context) {
+    fn create_editors(&mut self, notebook: &TitleCollection, ui: &egui::Ui, ctx: &egui::Context) {
         notebook.get_sorted_titles().into_iter()
             .filter_map(|title| {
-                let page_id = notebook.get_page_id_from_internal(title.page_index)?;
-                TitleEditor::new(title, page_id, ui, ctx)
+                TitleEditor::new(title, title.page_id, ui, ctx)
             }.map(|te| (te, title.title_level)).ok()
             )
             .for_each(|(title, lvl)| self.add_title(title, lvl));
     }
 
     /// Updates the editor ([egui] elements) from the given [Notebook].
-    pub fn update_editor(&mut self, notebook: &Notebook) {
+    pub fn update_editor(&mut self, notebook: &TitleCollection) {
         let mut new_titles = notebook.get_sorted_titles().into_iter();
         for title in &mut self.titles {
             title.visit_mut(&mut |editor| if let Some(Title {name, ..}) = new_titles.next() {
@@ -374,8 +359,6 @@ impl TitleHolder {
                         editor.title = String::new();
                         editor.was_edited = false;
                     },
-                    Transciption::Processing(_) =>
-                        todo!("Unexpected Title still Processing"),
                 }
                 }
             );
@@ -403,10 +386,12 @@ impl TitleHolder {
 }
 
 impl TitleEditor {
-    pub fn new(title: &Title, page_id: String, ui: &egui::Ui, ctx: &egui::Context) -> Result<Self, DecoderError> {
+    pub fn new(title: &Title, page_id: u64, ui: &egui::Ui, ctx: &egui::Context) -> Result<Self, DecoderError> {
         let bitmap = title.render_bitmap()?;
+        let width = (title.coords[2] - title.coords[0]) as usize;
+        let height = (title.coords[3] - title.coords[1]) as usize;
         let img_texture = match bitmap {
-            Some(bitmap) => Some(add_image(&bitmap, title.width, title.height, title.hash, ctx)?),
+            Some(bitmap) => Some(add_image(&bitmap, width, height, title.hash, ctx)?),
             None => None,
         };
         let persis_id = ui.make_persistent_id(format!("collapsing#{}", title.hash));
@@ -414,7 +399,6 @@ impl TitleEditor {
             Transciption::Manual(title) => (title.clone(), true),
             Transciption::MyScript(title) => (title.clone(), false),
             Transciption::None => (String::new(), false),
-            Transciption::Processing(_) => todo!(),
         };
         Ok(TitleEditor {
             title: title_transcript,
@@ -474,7 +458,7 @@ impl TitleEditor {
     }
 
     /// Update the contents of [self] to the given [Notebook].
-    pub fn update_notebook(&self, notebook: &mut Notebook) {
+    pub fn update_notebook(&self, notebook: &mut TitleCollection) {
         let (hash, name) = self.get_data();
         notebook.update_title(hash, &name);
         if let Some(ch) = &self.children {
