@@ -52,6 +52,7 @@ pub enum Transciption {
     None
 }
 
+#[derive(Clone)]
 pub struct Notebook {
     // /// The file name (not including the extension)
     // pub file_name: String,
@@ -114,33 +115,33 @@ pub struct Title {
     // pub height: usize,
     pub name: Transciption,
 }
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Link {
     pub start_page: usize,
     pub link_type: LinkType,
     pub coords: [u32; 4],
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum PageOrCommand {
     Page(Page),
     Command(lopdf::content::Content)
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Page {
     pub layers: Vec<Layer>,
     pub page_num: usize,
     pub page_id: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Layer {
     pub is_background: bool,
     pub content: Option<Vec<u8>>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub enum LinkType {
     /// A link to the same file, containing the page index
     SameFile{page_id: u64},

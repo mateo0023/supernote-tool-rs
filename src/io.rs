@@ -3,7 +3,6 @@
 use std::error::Error;
 use std::fs::File;
 use std::io::{self, prelude::*};
-use std::path::Path;
 
 use regex::Regex;
 
@@ -28,8 +27,6 @@ pub mod f_fmt {
     /// the version number. Because it is encoded as a ASCII string.
     pub const VERSION_NUM_BYTE_LEN: usize = 8;
 
-    /// The number of characters that determine an address
-    pub const ADDR_SIZE: u64 = 4;
     /// The type of the address as stored on the file
     pub type AddrType = u32;
     
@@ -91,7 +88,7 @@ pub async fn load(path: std::path::PathBuf) -> Result<LoadResult, Box<dyn Error>
         let mut file = File::open(path.clone())?;
         
         let mut file_data = Vec::with_capacity(file.metadata()?.len() as usize);
-        file.read_to_end(&mut file_data);
+        file.read_to_end(&mut file_data)?;
 
         file_data
     };
@@ -135,7 +132,7 @@ fn read_file_version(file: &[u8]) -> Option<u32> {
 /// Can occur if the regex used to search kewyords cannot be created.
 fn parse_meta_block(file: &[u8], addr: usize) -> io::Result<Option<MetaMap>> {
     let meta = get_content_at_address(file, addr)?;
-    let meta = String::from_utf8_lossy(&meta);
+    let meta = String::from_utf8_lossy(meta);
 
     let regex = match Regex::new(r"<([^:<>]+):([^:<>]*)>") {
         Ok(r) => r,
@@ -273,13 +270,6 @@ fn get_content_at_address(file: &[u8], addr: usize) -> io::Result<&[u8]> {
 /// Turns all errors into [None].
 pub fn extract_key_and_read<'a>(file: &'a [u8], meta: &MetaMap, key: &str) -> Option<&'a [u8]> {
     meta.get(key).and_then(|str_v| str_v[0].parse::<u64>().ok()).and_then(|addr| get_content_at_address(file, addr as usize).ok())
-}
-
-/// Saves the file to `path/name.pdf`.
-pub fn to_file(mut doc: lopdf::Document, path: &Path, name: &str) -> Result<File, Box<dyn Error>> {
-    let new_path = path.join(format!("{}.pdf", name));
-    let f = doc.save(new_path)?;
-    Ok(f)
 }
 
 // #######################################################################

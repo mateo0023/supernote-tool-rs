@@ -4,7 +4,6 @@ use std::path::PathBuf;
 use rfd::FileDialog;
 
 use crate::data_structures::{ServerConfig, Title, TitleCollection, TitleLevel, Transciption};
-use crate::decoder::ColorMap;
 use crate::error::*;
 use crate::data_structures::cache::*;
 use crate::scheduler::*;
@@ -85,6 +84,10 @@ impl MyApp {
         self.notebooks.sort_by_cached_key(|n| n.0.note_name.clone());
     }
 
+    // pub fn load_cache(&self, path: PathBuf) {
+    //     self.scheduler.load_cache(path);
+    // }
+
     /// Will update the titles and render the [notebook(s)](Self::notebooks)
     /// into a PDF (or PDFs).
     fn package_and_export(&mut self) {
@@ -102,7 +105,7 @@ impl MyApp {
                 for (note, _) in &self.notebooks {
                     let new_path = path.join(format!("{}.pdf", note.note_name));
                     notes.push(note.clone());
-                    paths.push(new_path);
+                    paths.push((note.note_id, new_path));
                 }
                 self.scheduler.save_notebooks(
                     notes,
@@ -200,38 +203,28 @@ impl eframe::App for MyApp {
             });
 
             if let Some(msg) = self.scheduler.check_update() {
-                match msg {
-                    SchedulerResponse::NotebookPartLoaded(name) => self.porcess_msgs.push(
-                        format!("Finished loading {}, now transcribing", name)
-                    ),
-                    SchedulerResponse::NotebookFullLoaded(notebook) => {
-                        self.add_notebook(notebook, ui, ctx);
+                use messages::SchedulerResponse::*;
+                let message = match msg {
+                    NoteMessage(note_msg) => match note_msg {
+                        messages::NoteMsg::LoadedToMemory(name) => format!("Note {} is now processing its titles", name),
+                        messages::NoteMsg::TitlesLoaded(notebook) => {
+                            let n = notebook.note_name.clone();
+                            self.add_notebook(notebook, ui, ctx);
+                            format!("Notebook {} was LOADED", n)
+                        },
+                        messages::NoteMsg::FailedToLoad(msg) => format!("A notebook failed to load due to {}", msg),
+                        messages::NoteMsg::FullyLoaded(id) => format!("Notebook with ID {} is ready for export", id),
                     },
-                    SchedulerResponse::FileSaved(path_buf) => {
-                        self.porcess_msgs.push(format!("Saved PDF to {}", path_buf.file_name().unwrap().to_str().unwrap()));
+                    CahceMessage(cache_msg) => match cache_msg {
+                        messages::CacheMsg::Loaded => "Cache Was Loaded".to_string(),
+                        messages::CacheMsg::FailedToLoad(msg) => format!("Cache Failed to load due to {}", msg),
+                        messages::CacheMsg::FailedToSave(msg) => format!("Cache failed to save due to {}", msg),
+                        messages::CacheMsg::Saved => "Cache was saved".to_string(),
                     },
-                    SchedulerResponse::CacheLoaded => {
-                        self.porcess_msgs.push("Loaded cache".to_string());
-                    },
-                    SchedulerResponse::NotebookFailedToLoad(err) => {
-                        self.porcess_msgs.push(format!("Notebook Failed to load w {}", err));
-                    },
-                    SchedulerResponse::TranscriptError(vec) => {
-                        self.porcess_msgs.extend(
-                            vec.into_iter().map(|e| e.to_string())
-                        );
-                    },
-                    SchedulerResponse::CacheLoadFailed(e) => {
-                        self.porcess_msgs.push(format!(
-                            "Cache failed to load with {}", e
-                        ));
-                    },
-                    SchedulerResponse::ExportFailed(e) => {
-                        self.porcess_msgs.push(format!(
-                            "Exporting documents failed with {}", e
-                        ));
-                    },
-                }
+                    FileSaved(path_buf) => format!("File {} was SAVED", path_buf.file_name().unwrap().to_str().unwrap()),
+                    ExportFailed(msg) => msg,
+                };
+                self.porcess_msgs.push(message);
             }
 
             if !self.porcess_msgs.is_empty() {

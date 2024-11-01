@@ -98,15 +98,15 @@ impl<T> Upgradable<T> for Option<T> {
 }
 
 
-/// Calls [`upgrade_or_deserialize`](Upgradable::upgrade_or_deserialize)
-/// on consecutive options.
+
 /// 
 /// `$text` needs to be a `&str`
 /// 
 /// You need to bring the [`Upgradable`] trait into
 /// scope for the macro to compile.
-macro_rules! upgrade_or_deserialize {
-    ($text:expr, $($version:ty),+) => {
-        std::option::Option::None$(.upgrade_or_deserialize::<$version>($text))+
-    };
+macro_rules! back_compat_deserialize {
+    ($text:expr, $($version:ty),+) => {{
+        use $crate::macros::Upgradable;
+        None$(.upgrade_or_deserialize::<$version>($text))+
+    }};
 }

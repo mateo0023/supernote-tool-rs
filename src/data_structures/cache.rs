@@ -3,7 +3,6 @@
 use serde::{Serialize, Deserialize};
 use std::{collections::HashMap, error::Error, path::PathBuf};
 
-use crate::macros::Upgradable;
 use super::{Title, TitleCollection, Transciption};
 
 /// Is what's mapped within each
@@ -76,7 +75,7 @@ impl AppCache {
         use std::io::Read;
         let mut text = String::new();
         std::fs::File::open(&path)?.read_to_string(&mut text)?;
-        let cache = upgrade_or_deserialize!(text.as_str(), AppCacheV1, AppCacheV2, AppCache);
+        let cache = back_compat_deserialize!(text.as_str(), AppCacheV1, AppCacheV2, AppCache);
         cache.ok_or("Failed to deserialize".into())
     }
         
