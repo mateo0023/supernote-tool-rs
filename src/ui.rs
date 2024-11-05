@@ -29,6 +29,10 @@ pub struct MyApp {
     focused_id: Option<egui::Id>,
     cache_loading: ProcessState,
     cache_saving: ProcessState,
+    /// Wether any settings have been loaded,
+    /// or attempted. Should always be true,
+    /// except when starting the app.
+    // cache_loaded: bool,
     /// 0. How many notebooks have been sent to load
     /// 1. How many notebooks are waiting for titles.
     /// 2. How many notebooks have been loaded.
@@ -100,6 +104,11 @@ impl MyApp {
             note_loading_status: None,
             note_exp_status: None,
         }
+    }
+
+    pub fn load_cache(&mut self, path: PathBuf) {
+        self.scheduler.load_cache(path);
+        self.cache_loading = ProcessState::Processing;
     }
 
     /// Adds a notebook to the app.
@@ -272,10 +281,9 @@ impl eframe::App for MyApp {
                 // Cache Buttons
                 ui.vertical(|ui| {
                     ui.horizontal( |ui| {
-                        if ui.button("Load Cache").clicked() {
-                            if let Some(path) = FileDialog::new().add_filter("Settings", &["json"]).pick_file() {
-                                self.scheduler.load_cache(path);
-                                self.cache_loading = ProcessState::Processing;
+                        if ui.button("Load Transcriptions").clicked() {
+                            if let Some(path) = FileDialog::new().add_filter("Transcriptions", &["json"]).pick_file() {
+                                self.load_cache(path);
                             }
                         }
                         match self.cache_loading {
@@ -291,7 +299,7 @@ impl eframe::App for MyApp {
                         }
                     });
     
-                    if ui.button("Save Cache").clicked() {
+                    if ui.button("Save Transcriptions").clicked() {
                         let file_dialog = match &self.settings_path {
                             Some(path) => {
                                 let base_dialog = FileDialog::new().add_filter("JSON", &["json"]);
