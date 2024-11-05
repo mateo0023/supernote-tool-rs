@@ -16,8 +16,8 @@ pub use potrace::PotraceError;
 use lopdf::content::Content;
 use lopdf::{dictionary, Document, Object, ObjectId, Stream};
 
-/// Exports the array of [Notebook] into a single [PDF document](Document).
-pub async fn export_multiple(notebooks: Vec<Notebook>, title_cols: Vec<TitleCollection>) -> Result<Document, Box<dyn Error>> {
+/// Exports the array of [Notebook] into a single **uncompressed** [PDF document](Document).
+pub fn export_multiple(notebooks: Vec<Notebook>, title_cols: Vec<TitleCollection>) -> Result<Document, Box<dyn Error>> {
     let mut doc = Document::with_version("1.7");
     let base_page_id = doc.new_object_id();
 
@@ -90,12 +90,13 @@ pub async fn export_multiple(notebooks: Vec<Notebook>, title_cols: Vec<TitleColl
     // the remainder of the trailer is set during `doc.save()`.
     doc.trailer.set("Root", catalog_id);
 
-    doc.compress();
+    // doc.compress();
 
     Ok(doc)
 }
 
-pub async fn to_pdf(notebook: Notebook, titles: TitleCollection) -> Result<Document, Box<dyn Error>> {
+/// Exports a single [Notebook] and [TitleCollection] into an **uncompressed** [Document].
+pub fn to_pdf(notebook: Notebook, titles: TitleCollection) -> Result<Document, Box<dyn Error>> {
     let mut doc = Document::with_version("1.7");
     let base_page_id = doc.new_object_id();
 
@@ -151,7 +152,7 @@ pub async fn to_pdf(notebook: Notebook, titles: TitleCollection) -> Result<Docum
     // the remainder of the trailer is set during `doc.save()`.
     doc.trailer.set("Root", catalog_id);
 
-    doc.compress();
+    // doc.compress();
 
     Ok(doc)
 }

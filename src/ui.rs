@@ -1,4 +1,3 @@
-use std::error::Error;
 use std::path::PathBuf;
 
 use rfd::FileDialog;
@@ -15,13 +14,18 @@ pub struct MyApp {
     scheduler: Scheduler,
     notebooks: Vec<(TitleCollection, TitleHolder)>,
     out_folder: Option<PathBuf>,
-    out_err: Option<Vec<Box<dyn Error>>>,
+    out_err: Option<Vec<String>>,
+    combine_pdfs: bool,
     out_name: String,
     settings_path: Option<PathBuf>,
     show_only_empty: bool,
     focused_id: Option<egui::Id>,
-    combine_pdfs: bool,
-    porcess_msgs: Vec<String>,
+    cache_loading: bool,
+    /// 0. How many notebooks have been sent to load
+    /// 1. How many notebooks are waiting for titles.
+    /// 2. How many notebooks have been loaded.
+    note_loading_status: Option<(usize, usize, usize, String)>,
+    note_exp_status: Option<(f32, String)>,
 }
 
 #[derive(Default)]
@@ -68,7 +72,9 @@ impl MyApp {
             show_only_empty: false,
             focused_id: None,
             combine_pdfs: true,
-            porcess_msgs: vec![],
+            cache_loading: false,
+            note_loading_status: None,
+            note_exp_status: None,
         }
     }
 
@@ -83,10 +89,6 @@ impl MyApp {
         self.notebooks.push((notebook, new_titles));
         self.notebooks.sort_by_cached_key(|n| n.0.note_name.clone());
     }
-
-    // pub fn load_cache(&self, path: PathBuf) {
-    //     self.scheduler.load_cache(path);
-    // }
 
     /// Will update the titles and render the [notebook(s)](Self::notebooks)
     /// into a PDF (or PDFs).
@@ -107,12 +109,14 @@ impl MyApp {
                     notes.push(note.clone());
                     paths.push((note.note_id, new_path));
                 }
+                self.note_exp_status = Some((0., "Loading Notebooks".to_string()));
                 self.scheduler.save_notebooks(
                     notes,
                     ExportSettings::Seprate(paths)
                 );
             }
         } else if let Some(path) = &self.out_folder {
+            self.note_exp_status = Some((0., "Loading Notebooks".to_string()));
             self.scheduler.save_notebooks(
                 self.notebooks.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>(),
                 ExportSettings::Merged(path.join(format!("{}.pdf", self.out_name)))
@@ -138,6 +142,65 @@ impl MyApp {
             self.scheduler.update_cache(k, v);
         }
     }
+
+    /// Checks the messages from the [Scheduler] and updates necessary
+    /// internal values:
+    /// * [`note_loading_status`](MyApp::note_loading_status)
+    /// * [`note_exp_status`](MyApp::note_exp_status)
+    /// * [`out_err`](MyApp::out_err)
+    /// * [`cache_loading`](MyApp::cache_loading)
+    fn check_messages(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        if let Some(msg) = self.scheduler.check_update() {
+            use messages::SchedulerResponse::*;
+            match msg {
+                NoteMessage(note_msg) => match note_msg {
+                    messages::NoteMsg::LoadedToMemory(name) => if let Some((_, p_l, _, msg)) = self.note_loading_status.as_mut() {
+                        *p_l += 1;
+                        *msg = format!("{} Processing Titles", name);
+                    },
+                    messages::NoteMsg::TitleLoaded(notebook) => {
+                        if let Some((t, _, done, msg)) = self.note_loading_status.as_mut() {
+                            *done += 1;
+                            *msg = format!("{} LOADED", notebook.note_name.clone());
+                            if t <= done {
+                                self.note_loading_status = None;
+                            }
+                        }
+                        self.add_notebook(notebook, ui, ctx);
+                    },
+                    messages::NoteMsg::FailedToLoad(msg) => {
+                        if let Some((_, _, done, _)) = self.note_loading_status.as_mut() {
+                            *done += 1;
+                        }
+                        self.out_err.get_or_insert(vec![]).push(
+                            format!("A notebook failed to load due to {}", msg)
+                        );
+                    },
+                    messages::NoteMsg::FullyLoaded(_) => (),
+                },
+                CahceMessage(cache_msg) => match cache_msg {
+                    messages::CacheMsg::Loaded => self.cache_loading = false,
+                    messages::CacheMsg::FailedToLoad(msg) =>
+                        self.out_err.get_or_insert(vec![]).push(
+                            format!("Cache Failed to load due to {}", msg)
+                        ),
+                    messages::CacheMsg::FailedToSave(msg) => 
+                    self.out_err.get_or_insert(vec![]).push(
+                        format!("Cache failed to save due to {}", msg)
+                    ),
+                    messages::CacheMsg::Saved => (),
+                },
+                ExportMessage(exp_msg) => match exp_msg {
+                    messages::ExpMsg::Error(err) => {self.out_err.get_or_insert(vec![]).push(err);},
+                    messages::ExpMsg::CreatingDocs(p) => self.note_exp_status = Some((p * 0.3, "Creating PDF".to_string())),
+                    messages::ExpMsg::CompressingDocs(p) => self.note_exp_status = Some((0.3 + p * 0.5, "Compressing PDFs".to_string())),
+                    messages::ExpMsg::SavingDocs(p) => self.note_exp_status = Some((0.8 + p * 0.2, "Saving PDFs".to_string())),
+                    messages::ExpMsg::Complete => self.note_exp_status = None,
+                    
+                },
+            }
+        }
+    }
 }
 
 impl eframe::App for MyApp {
@@ -145,9 +208,11 @@ impl eframe::App for MyApp {
         egui::CentralPanel::default().show(ctx, |ui| {
             // Load/Save Export buttons
             ui.horizontal(|ui| {
+                // Add/Remove Notebooks
                 ui.vertical(|ui| {
                     if ui.button("Add File(s)").clicked() {
                         if let Some(path_list) = FileDialog::new().add_filter("Supernote File", &["note"]).pick_files() {
+                            self.note_loading_status = Some((path_list.len(), 0, 0, format!("Loading {} files", path_list.len())));
                             self.scheduler.load_notebooks(path_list, self.server_config.clone());
                         }
                     }
@@ -161,6 +226,7 @@ impl eframe::App for MyApp {
                     }
                 });
                 
+                // Output Folder & Export Buttons
                 ui.vertical(|ui| {
                     if ui.button(format!(
                         "{} Output Folder",
@@ -174,12 +240,19 @@ impl eframe::App for MyApp {
                     }
                 });
 
+                // Cache Buttons
                 ui.vertical(|ui| {
-                    if ui.button("Load Cache").clicked() {
-                        if let Some(path) = FileDialog::new().add_filter("Settings", &["json"]).pick_file() {
-                            self.scheduler.load_cache(path)
+                    ui.horizontal( |ui| {
+                        if ui.button("Load Cache").clicked() {
+                            if let Some(path) = FileDialog::new().add_filter("Settings", &["json"]).pick_file() {
+                                self.scheduler.load_cache(path);
+                                self.cache_loading = true;
+                            }
                         }
-                    }
+                        if self.cache_loading {
+                            ui.add(egui::Spinner::new());
+                        }
+                    });
     
                     if ui.button("Save Cache").clicked() {
                         let file_dialog = match &self.settings_path {
@@ -202,39 +275,29 @@ impl eframe::App for MyApp {
                 });
             });
 
-            if let Some(msg) = self.scheduler.check_update() {
-                use messages::SchedulerResponse::*;
-                let message = match msg {
-                    NoteMessage(note_msg) => match note_msg {
-                        messages::NoteMsg::LoadedToMemory(name) => format!("Note {} is now processing its titles", name),
-                        messages::NoteMsg::TitlesLoaded(notebook) => {
-                            let n = notebook.note_name.clone();
-                            self.add_notebook(notebook, ui, ctx);
-                            format!("Notebook {} was LOADED", n)
-                        },
-                        messages::NoteMsg::FailedToLoad(msg) => format!("A notebook failed to load due to {}", msg),
-                        messages::NoteMsg::FullyLoaded(id) => format!("Notebook with ID {} is ready for export", id),
-                    },
-                    CahceMessage(cache_msg) => match cache_msg {
-                        messages::CacheMsg::Loaded => "Cache Was Loaded".to_string(),
-                        messages::CacheMsg::FailedToLoad(msg) => format!("Cache Failed to load due to {}", msg),
-                        messages::CacheMsg::FailedToSave(msg) => format!("Cache failed to save due to {}", msg),
-                        messages::CacheMsg::Saved => "Cache was saved".to_string(),
-                    },
-                    FileSaved(path_buf) => format!("File {} was SAVED", path_buf.file_name().unwrap().to_str().unwrap()),
-                    ExportFailed(msg) => msg,
-                };
-                self.porcess_msgs.push(message);
+            self.check_messages(ui, ctx);
+
+            // Note Loading progress
+            if let Some((total, part, comp, msg)) = self.note_loading_status.as_ref() {
+                let total = *total as f32;
+                let progress = *part as f32 / total * 0.4
+                    + *comp as f32 / total * 0.6;
+                ui.horizontal(|ui| {
+                    ui.label(msg);
+                    ui.add(
+                        egui::ProgressBar::new(progress)
+                        .animate(true)
+                    );
+                });
             }
 
-            if !self.porcess_msgs.is_empty() {
+            // Note EXPORT progress
+            if let Some((p, msg)) = self.note_exp_status.as_ref() {
                 ui.horizontal(|ui| {
-                    ui.vertical(|ui| {
-                        for lbl in &self.porcess_msgs {ui.label(lbl);}
-                    });
-                    if ui.button("Clear Messages").clicked() {
-                        self.porcess_msgs.clear();
-                    }
+                    ui.label(msg);
+                    ui.add(egui::ProgressBar::new(*p)
+                        .animate(true)
+                    );
                 });
             }
 
@@ -324,7 +387,7 @@ impl TitleHolder {
         titles
     }
 
-    /// Creates the [TitleEditor]s from the given [Notebook].
+    /// Creates the [TitleEditor]s from the given [TitleCollection].
     fn create_editors(&mut self, notebook: &TitleCollection, ui: &egui::Ui, ctx: &egui::Context) {
         notebook.get_sorted_titles().into_iter()
             .filter_map(|title| {
@@ -332,30 +395,6 @@ impl TitleHolder {
             }.map(|te| (te, title.title_level)).ok()
             )
             .for_each(|(title, lvl)| self.add_title(title, lvl));
-    }
-
-    /// Updates the editor ([egui] elements) from the given [Notebook].
-    pub fn update_editor(&mut self, notebook: &TitleCollection) {
-        let mut new_titles = notebook.get_sorted_titles().into_iter();
-        for title in &mut self.titles {
-            title.visit_mut(&mut |editor| if let Some(Title {name, ..}) = new_titles.next() {
-                match name {
-                    Transciption::Manual(title) => {
-                        editor.title.clone_from(title);
-                        editor.was_edited = true;
-                    },
-                    Transciption::MyScript(title) => {
-                        editor.title.clone_from(title);
-                        editor.was_edited = false;
-                    },
-                    Transciption::None => {
-                        editor.title = String::new();
-                        editor.was_edited = false;
-                    },
-                }
-                }
-            );
-        }
     }
 
     pub fn get_cache(&self) -> (u64, NotebookCache) {
@@ -406,9 +445,9 @@ impl TitleEditor {
     }
 
     /// Get's the data needed for the [Title] to
-    /// be updated in the [Notebook].
+    /// be updated in the [TitleCollection].
     /// 
-    /// That's the [title's hash](Title::content_hash) and
+    /// That's the [title's hash](Title::hash) and
     /// new [name](Title::name).
     pub fn get_data(&self) -> (u64, Transciption) {
         let title = match self.title.is_empty() {
@@ -450,7 +489,7 @@ impl TitleEditor {
         }
     }
 
-    /// Update the contents of [self] to the given [Notebook].
+    /// Update the contents of [self] to the given [TitleCollection].
     pub fn update_notebook(&self, notebook: &mut TitleCollection) {
         let (hash, name) = self.get_data();
         notebook.update_title(hash, &name);
@@ -475,7 +514,7 @@ impl TitleEditor {
                     false => Transciption::MyScript(self.title.clone()),
                 },
             },
-            page_id: self.page_id.clone(),
+            page_id: self.page_id,
             hash: self.hash,
         })
     }
@@ -534,20 +573,6 @@ impl TitleEditor {
     /// Add the a single-line text editor to the [ui](egui::Ui) & returns that response.
     fn text_edit(title: &mut String, ui: &mut egui::Ui) -> egui::Response {
         ui.text_edit_singleline(title)
-    }
-
-    /// Perform the `f` function on itself and children mutably.
-    pub fn visit_mut<F>(&mut self, f: &mut F)
-    where
-        F: FnMut(&mut TitleEditor)
-    {
-        f(self);
-
-        if let Some(children) = &mut self.children {
-            for child in children {
-                child.visit_mut(f);
-            }
-        }
     }
 }
 

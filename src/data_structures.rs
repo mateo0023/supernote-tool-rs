@@ -197,10 +197,7 @@ impl Transciption {
     pub async fn transcribe(strokes: Vec<Stroke>, config: Arc<RwLock<stroke::ServerConfig>>) -> Self {
         match stroke::transcribe(strokes, config).await {
             Ok(s) => Transciption::MyScript(s),
-            Err(e) => {
-                println!("Transcription Error: {}", e);
-                Transciption::None
-            },
+            Err(_) => Transciption::None,
         }
     }
     
