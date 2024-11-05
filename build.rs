@@ -7,10 +7,10 @@ use std::path::PathBuf;
 
 fn main() {
     // Tell cargo to link to the Potrace library
-    println!("cargo:rustc-link-lib=potrace");
+    println!("cargo:rustc-link-lib=static=potrace");
 
     // Add the library search path
-    println!("cargo:rustc-link-search=native=/opt/homebrew/opt/potrace/lib");
+    println!("cargo:rustc-link-search=/opt/homebrew/opt/potrace/lib");
 
     // Specify the include path where 'potracelib.h' is located if necessary
     // For example: let include_path = "/usr/local/include";
