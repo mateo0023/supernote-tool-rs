@@ -82,7 +82,7 @@ const LAYER_KEYS: [&str; 5] = ["MAINLAYER", "LAYER1", "LAYER2", "LAYER3", "BGLAY
 /// * [`Notebook`] without [`Titles`](Title)
 /// * The notebook's [`Metadata`], so we can later create the `Titles`
 /// * A [`Vec<u8>`] with all the file's data.
-pub async fn load(path: std::path::PathBuf) -> Result<LoadResult, Box<dyn Error>> {
+pub fn load(path: std::path::PathBuf) -> Result<LoadResult, Box<dyn Error>> {
     let name = path.file_stem().unwrap().to_str().unwrap().to_string();
     let file_data = {
         let mut file = File::open(path.clone())?;

@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use rfd::FileDialog;
 
@@ -13,19 +14,41 @@ pub struct MyApp {
     server_config: ServerConfig,
     scheduler: Scheduler,
     notebooks: Vec<(TitleCollection, TitleHolder)>,
+    /// The folder to export the PDF(s)
     out_folder: Option<PathBuf>,
+    /// Any error messages to display.
     out_err: Option<Vec<String>>,
     combine_pdfs: bool,
+    /// The name to save the Merged PDF
     out_name: String,
+    /// The path to the [AppCache]
     settings_path: Option<PathBuf>,
     show_only_empty: bool,
+    /// The [egui::Id] of the [TitleEditor]
+    /// currently in focus.
     focused_id: Option<egui::Id>,
-    cache_loading: bool,
+    cache_loading: ProcessState,
+    cache_saving: ProcessState,
     /// 0. How many notebooks have been sent to load
     /// 1. How many notebooks are waiting for titles.
     /// 2. How many notebooks have been loaded.
+    /// 3. Message to display
     note_loading_status: Option<(usize, usize, usize, String)>,
+    /// 0. How far along we are (0, 1)
+    /// 1. Message to display.
     note_exp_status: Option<(f32, String)>,
+}
+
+#[derive(Default, Clone, Copy)]
+enum ProcessState {
+    /// It's processing (unkown progress)
+    Processing,
+    /// Process is done, but we need some timeout
+    /// to display result.
+    TimeOut(Instant),
+    /// The process is fully done.
+    #[default]
+    Done,
 }
 
 #[derive(Default)]
@@ -72,7 +95,8 @@ impl MyApp {
             show_only_empty: false,
             focused_id: None,
             combine_pdfs: true,
-            cache_loading: false,
+            cache_loading: ProcessState::Done,
+            cache_saving: ProcessState::Done,
             note_loading_status: None,
             note_exp_status: None,
         }
@@ -96,11 +120,12 @@ impl MyApp {
         self.update_cache_from_editor();
         if let Some(p) = self.settings_path.as_ref() {
             self.scheduler.save_cache(p.clone());
+            self.cache_saving = ProcessState::Processing;
         }
 
         self.update_note_from_holder();
 
-        if self.notebooks.len() < 2 || !self.combine_pdfs {
+        if self.notebooks.len() < 2 || !self.combine_pdfs || self.out_name.is_empty() {
             if let Some(path) = &self.out_folder {
                 let mut notes = vec![];
                 let mut paths = vec![];
@@ -179,22 +204,26 @@ impl MyApp {
                     messages::NoteMsg::FullyLoaded(_) => (),
                 },
                 CahceMessage(cache_msg) => match cache_msg {
-                    messages::CacheMsg::Loaded => self.cache_loading = false,
-                    messages::CacheMsg::FailedToLoad(msg) =>
+                    messages::CacheMsg::Loaded => self.cache_loading.one_sec(),
+                    messages::CacheMsg::FailedToLoad(msg) => {
+                        self.cache_loading = ProcessState::Done;
                         self.out_err.get_or_insert(vec![]).push(
                             format!("Cache Failed to load due to {}", msg)
-                        ),
-                    messages::CacheMsg::FailedToSave(msg) => 
-                    self.out_err.get_or_insert(vec![]).push(
-                        format!("Cache failed to save due to {}", msg)
-                    ),
-                    messages::CacheMsg::Saved => (),
+                        )
+                    },
+                    messages::CacheMsg::FailedToSave(msg) => {
+                        self.cache_saving = ProcessState::Done;
+                        self.out_err.get_or_insert(vec![]).push(
+                            format!("Cache failed to save due to {}", msg)
+                        )
+                    },
+                    messages::CacheMsg::Saved => self.cache_saving.one_sec(),
                 },
                 ExportMessage(exp_msg) => match exp_msg {
                     messages::ExpMsg::Error(err) => {self.out_err.get_or_insert(vec![]).push(err);},
-                    messages::ExpMsg::CreatingDocs(p) => self.note_exp_status = Some((p * 0.3, "Creating PDF".to_string())),
-                    messages::ExpMsg::CompressingDocs(p) => self.note_exp_status = Some((0.3 + p * 0.5, "Compressing PDFs".to_string())),
-                    messages::ExpMsg::SavingDocs(p) => self.note_exp_status = Some((0.8 + p * 0.2, "Saving PDFs".to_string())),
+                    messages::ExpMsg::CreatingDocs(p) => self.note_exp_status = Some((p * 0.3, "Creating PDF(s)".to_string())),
+                    messages::ExpMsg::CompressingDocs(p) => self.note_exp_status = Some((0.3 + p * 0.5, "Compressing PDF(s)".to_string())),
+                    messages::ExpMsg::SavingDocs(p) => self.note_exp_status = Some((0.8 + p * 0.2, "Saving PDF(s)".to_string())),
                     messages::ExpMsg::Complete => self.note_exp_status = None,
                     
                 },
@@ -246,11 +275,19 @@ impl eframe::App for MyApp {
                         if ui.button("Load Cache").clicked() {
                             if let Some(path) = FileDialog::new().add_filter("Settings", &["json"]).pick_file() {
                                 self.scheduler.load_cache(path);
-                                self.cache_loading = true;
+                                self.cache_loading = ProcessState::Processing;
                             }
                         }
-                        if self.cache_loading {
-                            ui.add(egui::Spinner::new());
+                        match self.cache_loading {
+                            ProcessState::Processing => {
+                                ui.add(egui::Spinner::new());
+                            },
+                            ProcessState::TimeOut(end) => if Instant::now() < end {
+                                ui.label(egui::RichText::new("✅")
+                                    .size(16.)
+                                );
+                            },
+                            ProcessState::Done => (),
                         }
                     });
     
@@ -269,6 +306,7 @@ impl eframe::App for MyApp {
                         };
                         if let Some(out_path) = file_dialog.save_file() {
                             self.scheduler.save_cache(out_path.clone());
+                            self.cache_saving = ProcessState::Processing;
                             self.settings_path = Some(out_path);
                         }
                     }
@@ -373,6 +411,14 @@ impl eframe::App for MyApp {
             });
         
         });
+    }
+}
+
+impl ProcessState {
+    pub fn one_sec(&mut self) {
+        *self = ProcessState::TimeOut(
+            Instant::now().checked_add(Duration::from_secs(1)).unwrap()
+        );
     }
 }
 

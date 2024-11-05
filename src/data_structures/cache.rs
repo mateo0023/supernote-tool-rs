@@ -71,7 +71,7 @@ struct TitleCacheV1 {
 
 impl AppCache {
     /// Load an AppCache from a path.
-    pub async fn from_path(path: PathBuf) -> Result<AppCache, Box<dyn Error>> {
+    pub fn from_path(path: PathBuf) -> Result<AppCache, Box<dyn Error>> {
         use std::io::Read;
         let mut text = String::new();
         std::fs::File::open(&path)?.read_to_string(&mut text)?;

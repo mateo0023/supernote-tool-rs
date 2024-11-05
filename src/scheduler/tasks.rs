@@ -19,7 +19,7 @@ use super::{ExportSettings, FutureBox, SchedulerResponse};
 
 /// A [Future] that loads a single [Notebook].
 #[derive(Clone)]
-pub struct SingeNoteLoader {
+pub struct SingleNoteLoader {
     task: LoadingStage,
     cache: Arc<RwLock<AppCache>>,
     config: Arc<RwLock<ServerConfig>>,
@@ -36,7 +36,7 @@ enum LoadingStage {
     Empty
 }
 
-impl SingeNoteLoader {
+impl SingleNoteLoader {
     pub fn new(channel: mpsc::Sender<SchedulerResponse>, cache: Arc<RwLock<AppCache>>, config: Arc<RwLock<ServerConfig>>) -> Self {
         Self {
             task: LoadingStage::Empty,
@@ -46,14 +46,16 @@ impl SingeNoteLoader {
         }
     }
 
+    /// Create a new [SingleNoteLoader] as a [Future] loading
+    /// `path`.
     pub fn clone_w_task(&self, path: PathBuf) -> Self {
         let mut new = self.clone();
-        new.task = LoadingStage::Initial(load(path).boxed_local());
+        new.task = LoadingStage::Initial(async move {load(path)}.boxed_local());
         new
     }
 }
 
-impl Future for SingeNoteLoader {
+impl Future for SingleNoteLoader {
     type Output = Result<Notebook, Box<dyn Error>>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
@@ -79,7 +81,7 @@ impl Future for SingeNoteLoader {
                                     .map_err(|e| e.to_string()))
                                     .await
                                 }.boxed_local()),
-                                note.into_commands(ColorMap::default()).boxed_local()
+                                async move {note.into_commands(ColorMap::default())}.boxed_local()
                             )
                         },
                         Err(e) => {

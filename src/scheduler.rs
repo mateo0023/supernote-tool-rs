@@ -17,7 +17,7 @@ use std::task::Poll;
 
 use futures::{future, FutureExt as _,};
 use futures::stream::{FuturesUnordered, StreamExt};
-use tasks::SingeNoteLoader;
+use tasks::SingleNoteLoader;
 use tokio::sync::{mpsc, RwLock};
 
 use crate::data_structures::cache::NotebookCache;
@@ -117,10 +117,10 @@ struct SchedulerIn {
     loaded_titles: Arc<RwLock<HashMap<u64, TitleCollection>>>,
     response_sender: mpsc::Sender<SchedulerResponse>,
     
-    loader_template: SingeNoteLoader,
+    loader_template: SingleNoteLoader,
     
     /// Stores the [Notebook] import tasks in a [`StreamGuard`]
-    note_tasks: StreamGuard<SingeNoteLoader>,
+    note_tasks: StreamGuard<SingleNoteLoader>,
     /// Stores all other tasks with return type `()` in
     /// a [`StreamGuard`]
     misc_tasks: StreamGuard<FutureBox<()>>,
@@ -192,10 +192,10 @@ impl Scheduler {
     }
 
     pub fn load_notebooks(&self, paths: Vec<PathBuf>, config: ServerConfig) {
+        self.command_sender.blocking_send(SchedulerCommands::UpdateSettings(config)).unwrap();
         if let Err(e) = self.command_sender.blocking_send(SchedulerCommands::LoadNotebook(paths)) {
             panic!("Failed with {:?}", e);
         };
-        self.command_sender.blocking_send(SchedulerCommands::UpdateSettings(config)).unwrap();
     }
 
     /// Checks for an update, panicing if the channel disconnected.
@@ -223,7 +223,7 @@ impl SchedulerIn {
         let config: Arc<RwLock<ServerConfig>> = Default::default();
         let app_cache = Arc::new(RwLock::new(AppCache::default()));
         Self {
-            loader_template: SingeNoteLoader::new(response_sender.clone(), app_cache.clone(), config.clone()),
+            loader_template: SingleNoteLoader::new(response_sender.clone(), app_cache.clone(), config.clone()),
             note_tasks: StreamGuard::new(),
             response_sender,
             app_cache,
@@ -252,7 +252,7 @@ impl SchedulerIn {
             SchedulerCommands::LoadCache(path_buf) => {
                 misc_task!(self(app_cache, response_sender) => {
                     use SchedulerResponse::CahceMessage as Msg;
-                    match AppCache::from_path(path_buf).await {
+                    match AppCache::from_path(path_buf) {
                         Ok(cache) => {
                             response_sender.send(Msg(CacheMsg::Loaded))
                             .then(|_|

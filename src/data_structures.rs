@@ -18,7 +18,6 @@ use stroke::Stroke;
 pub use stroke::ServerConfig;
 use tokio::sync::RwLock;
 
-use crate::scheduler::FutureBox;
 use crate::exporter::page_to_commands;
 use crate::ColorMap;
 
@@ -297,16 +296,16 @@ impl Notebook {
         self.page_id_map.get(&page_id).copied().map(|idx| idx + self.starting_page)
     }
 
-    pub async fn into_commands(mut self, colormap: ColorMap) -> Self {
+    pub fn into_commands(mut self, colormap: ColorMap) -> Self {
         use PageOrCommand::*;
-        self.pages = futures::future::join_all(
-            self.pages.into_iter().map(|page| -> FutureBox<Result<Content, Box<dyn Error>>> {
+        self.pages = 
+            self.pages.into_iter().map(|page| -> Result<Content, Box<dyn Error>> {
                 match page {
-                    Page(page) => Box::pin(page_to_commands(page, colormap)),
-                    Command(content) => Box::pin(async {Ok(content)}),
+                    Page(page) => page_to_commands(page, colormap),
+                    Command(content) => Ok(content),
                 }
             })
-        ).await.into_iter().map(|c| Command(c.unwrap())).collect();
+            .map(|c| Command(c.unwrap())).collect();
         self
     }
 }

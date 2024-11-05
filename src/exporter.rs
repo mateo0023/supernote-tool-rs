@@ -352,7 +352,7 @@ fn add_internal_link(
 }
 
 /// Exports a given page to the PDF Vector Commands
-pub async fn page_to_commands(page: Page, colormap: ColorMap) -> Result<Content, Box<dyn Error>> {
+pub fn page_to_commands(page: Page, colormap: ColorMap) -> Result<Content, Box<dyn Error>> {
     use file_format_consts::{PAGE_HEIGHT, PAGE_WIDTH};
 
     let mut image = DecodedImage::default();
