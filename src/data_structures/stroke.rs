@@ -233,7 +233,7 @@ impl Stroke {
         }), final_ref))
     }
 
-    pub fn process_page(data: &[u8]) -> Result<Vec<Self>, StrokeError> {
+    pub fn process_page(data: &[u8]) -> Result<Vec<Stroke>, StrokeError> {
         let (path_count, mut data) = get_len(data).map_err(|_| StrokeError::TooShort)?;
         let mut paths = Vec::with_capacity(path_count);
 

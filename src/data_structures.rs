@@ -638,8 +638,12 @@ impl Page {
 
     /// Given a [PageMeta](metadata::PageMeta) it returns a [Page].
     pub fn from_meta(metadata: &metadata::PageMeta, file: &[u8]) -> (Self, (u64, Vec<Stroke>)) {
-        let paths = extract_key_and_read(file, &metadata.page_info, "TOTALPATH").unwrap();
-        let totalpath = stroke::Stroke::process_page(paths).expect("Failed to process the strokes in page");
+        // Page might be empty.
+        let totalpath = match  extract_key_and_read(file, &metadata.page_info, "TOTALPATH") {
+            Some(paths) => 
+                stroke::Stroke::process_page(paths).expect("Failed to process the strokes in page"),
+            None => vec![],
+        };
         let page_id = hash(metadata.page_info.get("PAGEID").unwrap()[0].as_bytes());
         (Page {
             // recogn_file: extract_key_and_read(file, &metadata.page_info, "RECOGNFILE"),
