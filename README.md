@@ -16,11 +16,11 @@ This project is a Rust-based GUI application designed to work with [Supernote](h
 - **Optimized for MacOS (Apple Silicon)**: Built and optimized for machines running on Apple Silicon chips. Needs work to integrate potrace's C library when compiling on Windows.
 
 ## Requirements
-- **Potrace C library**: This project requires the Potrace C library to be installed.
-  - On MacOS `brew install potrace`
 - A [MyScript](https://www.myscript.com) subscription. With a `JSON` file in `./my_script_keys.json`. If you don't have that, it'll use the same API Key they use for the demos.
 
 For development only (not needed if using a pre-compiled binary)
+- **Potrace C library**: This project requires the Potrace C library to be installed.
+  - On MacOS `brew install potrace`
 - **Rust 1.54** or later
 - **Cargo** (Rust’s package manager)
 - Additional dependencies as listed in `Cargo.toml`.
