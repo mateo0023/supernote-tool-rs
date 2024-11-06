@@ -110,6 +110,7 @@ enum SchedulerCommands {
 struct SchedulerIn {
     /// The current [`AppCache`].
     app_cache: Arc<RwLock<AppCache>>,
+    app_cache_path: Arc<RwLock<Option<PathBuf>>>,
     /// The given [server configuration](ServerConfig)
     config: Arc<RwLock<ServerConfig>>,
     /// The fully_loaded notebooks.
@@ -221,16 +222,18 @@ impl Default for Scheduler {
 impl SchedulerIn {
     fn new(response_sender: mpsc::Sender<SchedulerResponse>) -> Self {
         let config: Arc<RwLock<ServerConfig>> = Default::default();
-        let app_cache = Arc::new(RwLock::new(AppCache::default()));
+        let app_cache = Arc::new(RwLock::const_new(AppCache::default()));
+        let loader_template = SingleNoteLoader::new(response_sender.clone(), app_cache.clone(), config.clone());
         Self {
-            loader_template: SingleNoteLoader::new(response_sender.clone(), app_cache.clone(), config.clone()),
-            note_tasks: StreamGuard::new(),
-            response_sender,
             app_cache,
+            app_cache_path: Arc::new(RwLock::const_new(None)),
             config,
             loaded_notebooks: Default::default(),
-            misc_tasks: StreamGuard::new(),
             loaded_titles: Default::default(),
+            response_sender,
+            loader_template,
+            note_tasks: StreamGuard::new(),
+            misc_tasks: StreamGuard::new(),
         }
     }
 
@@ -268,15 +271,22 @@ impl SchedulerIn {
             },
             SchedulerCommands::ExportTo(titles, export_settings) => {
                 let ids = titles.iter().map(|t| t.note_id).collect();
-                misc_task!(self(app_cache, loaded_titles, response_sender, loaded_notebooks) => {
+                misc_task!(self(app_cache, loaded_titles, response_sender, loaded_notebooks, app_cache_path) => {
                     let mut c = app_cache.write().await;
                     titles.iter().for_each(|t| c.update_from_notebook(t));
                     loaded_titles.write().await.extend(
                         titles.into_iter().map(|t| (t.note_id, t))
                     );
                     tokio::task::yield_now().await;
-                    tasks::export_notes(ids, export_settings, loaded_notebooks, loaded_titles, response_sender)
-                        .join().unwrap();
+                    let handle = tasks::export_notes(ids, export_settings, loaded_notebooks, loaded_titles, response_sender.clone());
+                    if let Some(p) = app_cache_path.read().await.as_ref() {
+                        if let Err(e) = app_cache.read().await.save_to(p) {
+                            use SchedulerResponse::CahceMessage as Msg;
+                            use CacheMsg::FailedToSave as Fail;
+                            let _ = response_sender.send(Msg(Fail(e.to_string()))).await;
+                        }
+                    }
+                    handle.join().unwrap()
                 });
             },
             SchedulerCommands::SaveCache(path) => {

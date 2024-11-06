@@ -2,12 +2,18 @@
 name = "supernote-tool-rs"
 version = "2.0.1"
 edition = "2021"
-cdescription = "A Rust-based GUI application designed to work with Supernote A5X files. It provides a streamlined way to render and export Supernote files to vector PDFs, adding features such as a Table of Contents (ToC) and link support."
+cdescription = "A Rust-based application designed to work with Supernote A5X files. It provides a streamlined way to render and export Supernote files to vector PDFs, adding features such as a Table of Contents (ToC) and link support."
 
 [package.metadata.bundle]
 name = "Supernote Tool Rust"
 identifier = "io.github.mateo0023.supernote-tool-rs"
 icon = ["./icons/64x64.png", "./icons/128x128.png", "./icons/256x256@2x.png"]
+
+[features]
+# The default list of features
+default = ["gui"]
+# The dependencies needed by the GUI.
+gui = ["dep:egui", "dep:eframe", "dep:rfd", "dep:image"]
 
 [[bench]]
 name = "library_benchmark"
@@ -23,21 +29,23 @@ debug = true
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-eframe = "0.28.1"
-egui = "0.28.1"
+# Optional deps needed by the UI
+eframe = {version = "0.28.1", optional = true}
+egui = {version = "0.28.1", optional = true}
+rfd = {version = "0.15.0", optional = true}
+image = {version = "0.25.2", optional = true}
 futures = "0.3.31"
 hex = "0.4.3"
 hmac = "0.12.1"
-image = "0.25.2"
 libc = "0.2.158"
 lopdf = "0.34.0"
 regex = "1.10.3"
 reqwest = "0.12.8"
-rfd = "0.15.0"
 serde = {version = "1.0.195", features = ["derive"]}
 serde_json = "1.0.111"
 sha2 = "0.10.8"
 tokio = {version = "1.40.0", features = ["full"]}
+clap = { version = "4.5.20", features = ["derive"] }
 
 [build-dependencies]
 bindgen = "0.70.1"

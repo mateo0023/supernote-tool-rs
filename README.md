@@ -53,6 +53,7 @@ Download releases tab for your platform.
     ```bash
     cargo build --release
     ```
+  Optionally, you can run `cargo build --release --no-default-features to build a CLI.
 
 ## Usage
 
@@ -77,7 +78,7 @@ The titles are automatically grouped in the following way:
 
 ![Black, Light Gray, Dark Gray, Striped](./examples/Test%20Doc_Page_3.png)
 
-However, there's no Optical Character Recognition (OCR) so they are first loaded with empty text fields. You can manually edit them and even save/load those title transcriptions with the Load/Save Cache buttons. When exporting, these settings will be automatically saved to the last selected settings file.
+There's title handwriting recognition done through [MyScript](https://www.myscript.com). Transcription will only be done if you've not yet done so in the loaded "Transcripts" JSON file. You can manually edit titles and even save/load those transcriptions with the "Load/Save Transcriptions" buttons. When exporting, these settings will be automatically saved to the last selected settings file.
 
 ## Contributions
 

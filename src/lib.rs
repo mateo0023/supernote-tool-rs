@@ -5,6 +5,10 @@ mod data_structures;
 mod decoder;
 mod exporter;
 mod scheduler;
+#[cfg(feature = "gui")]
+mod ui;
+#[cfg(not(feature = "gui"))]
+pub mod command_line;
 
 pub mod common {
     pub use crate::data_structures::file_format_consts as f_fmt;
@@ -19,7 +23,6 @@ pub mod error {
     pub use crate::data_structures::TransciptionError;
 }
 
-mod ui;
 use std::path::PathBuf;
 
 pub use io::load;
@@ -30,6 +33,7 @@ pub use decoder::ColorMap;
 pub use scheduler::{Scheduler, ExportSettings, messages};
 
 /// Starts the EGUI App (default behaviour)
+#[cfg(feature = "gui")]
 pub fn start_app() {
     let _ = eframe::run_native(
         "Supernote Tool",
@@ -55,7 +59,7 @@ pub fn sync_work(
     use tokio::sync::RwLock;
     let cache = cache.unwrap_or_default();
     let config = Arc::new(RwLock::new(config));
-    let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     let results = paths.into_iter()
         .map(|path| load(path))
         .map(|n_res| match n_res {
