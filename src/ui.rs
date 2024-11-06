@@ -140,6 +140,7 @@ impl MyApp {
                     paths.push((note.note_id, new_path));
                 }
                 self.note_exp_status = Some((0., "Loading Notebooks".to_string()));
+                self.cache_saving = ProcessState::Processing;
                 self.scheduler.save_notebooks(
                     notes,
                     ExportSettings::Seprate(paths)
@@ -147,6 +148,7 @@ impl MyApp {
             }
         } else if let Some(path) = &self.out_folder {
             self.note_exp_status = Some((0., "Loading Notebooks".to_string()));
+            self.cache_saving = ProcessState::Processing;
             self.scheduler.save_notebooks(
                 self.notebooks.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>(),
                 ExportSettings::Merged(path.join(format!("{}.pdf", self.out_name)))
@@ -293,27 +295,42 @@ impl eframe::App for MyApp {
                             },
                             ProcessState::Done => (),
                         }
+
                     });
     
-                    if ui.button("Save Transcriptions").clicked() {
-                        let file_dialog = match &self.settings_path {
-                            Some(path) => {
-                                let base_dialog = FileDialog::new().add_filter("JSON", &["json"]);
-                                match (path.parent(), path.file_name()) {
-                                    (None, None) => base_dialog,
-                                    (None, Some(file_name)) => base_dialog.set_file_name(file_name.to_str().unwrap()),
-                                    (Some(path), None) => base_dialog.set_directory(path),
-                                    (Some(path), Some(file_name)) => base_dialog.set_directory(path).set_file_name(file_name.to_str().unwrap()),
-                                }
-                            },
-                            None => FileDialog::new().add_filter("JSON", &["json"]),
-                        };
-                        if let Some(out_path) = file_dialog.save_file() {
-                            self.scheduler.save_cache(out_path.clone());
-                            self.cache_saving = ProcessState::Processing;
-                            self.settings_path = Some(out_path);
+                    ui.horizontal(|ui| {
+                        if ui.button("Save Transcriptions").clicked() {
+                            let file_dialog = match &self.settings_path {
+                                Some(path) => {
+                                    let base_dialog = FileDialog::new().add_filter("JSON", &["json"]);
+                                    match (path.parent(), path.file_name()) {
+                                        (None, None) => base_dialog,
+                                        (None, Some(file_name)) => base_dialog.set_file_name(file_name.to_str().unwrap()),
+                                        (Some(path), None) => base_dialog.set_directory(path),
+                                        (Some(path), Some(file_name)) => base_dialog.set_directory(path).set_file_name(file_name.to_str().unwrap()),
+                                    }
+                                },
+                                None => FileDialog::new().add_filter("JSON", &["json"]),
+                            };
+                            if let Some(out_path) = file_dialog.save_file() {
+                                self.scheduler.save_cache(out_path.clone());
+                                self.cache_saving = ProcessState::Processing;
+                                self.settings_path = Some(out_path);
+                            }
                         }
-                    }
+                    
+                        match self.cache_saving {
+                            ProcessState::Processing => {
+                                ui.add(egui::Spinner::new());
+                            },
+                            ProcessState::TimeOut(end) => if Instant::now() < end {
+                                ui.label(egui::RichText::new("✅")
+                                    .size(16.)
+                                );
+                            },
+                            ProcessState::Done => (),
+                        }
+                    })
                 });
             });
 

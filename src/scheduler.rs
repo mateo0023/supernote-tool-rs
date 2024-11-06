@@ -253,8 +253,9 @@ impl SchedulerIn {
                 );
             },
             SchedulerCommands::LoadCache(path_buf) => {
-                misc_task!(self(app_cache, response_sender) => {
+                misc_task!(self(app_cache, response_sender, app_cache_path) => {
                     use SchedulerResponse::CahceMessage as Msg;
+                    let _ = app_cache_path.write().await.insert(path_buf.clone());
                     match AppCache::from_path(path_buf) {
                         Ok(cache) => {
                             response_sender.send(Msg(CacheMsg::Loaded))
@@ -272,19 +273,29 @@ impl SchedulerIn {
             SchedulerCommands::ExportTo(titles, export_settings) => {
                 let ids = titles.iter().map(|t| t.note_id).collect();
                 misc_task!(self(app_cache, loaded_titles, response_sender, loaded_notebooks, app_cache_path) => {
-                    let mut c = app_cache.write().await;
-                    titles.iter().for_each(|t| c.update_from_notebook(t));
-                    loaded_titles.write().await.extend(
-                        titles.into_iter().map(|t| (t.note_id, t))
-                    );
-                    tokio::task::yield_now().await;
+                    {
+                        let mut c = app_cache.write().await;
+                        titles.iter().for_each(|t| c.update_from_notebook(t));
+                        loaded_titles.write().await.extend(
+                            titles.into_iter().map(|t| (t.note_id, t))
+                        );
+                    }
                     let handle = tasks::export_notes(ids, export_settings, loaded_notebooks, loaded_titles, response_sender.clone());
+                    
                     if let Some(p) = app_cache_path.read().await.as_ref() {
+                        use SchedulerResponse::CahceMessage as Msg;
+
                         if let Err(e) = app_cache.read().await.save_to(p) {
-                            use SchedulerResponse::CahceMessage as Msg;
                             use CacheMsg::FailedToSave as Fail;
                             let _ = response_sender.send(Msg(Fail(e.to_string()))).await;
+                        } else {
+                            let _ = response_sender.send(Msg(CacheMsg::Saved)).await;
                         }
+                    } else {
+                        use SchedulerResponse::CahceMessage as Msg;
+                        let _ = response_sender.send(Msg(CacheMsg::FailedToSave(
+                            "No settings were sent".to_string()
+                        ))).await;
                     }
                     handle.join().unwrap()
                 });
