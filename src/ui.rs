@@ -29,16 +29,12 @@ pub struct MyApp {
     focused_id: Option<egui::Id>,
     cache_loading: ProcessState,
     cache_saving: ProcessState,
-    /// Wether any settings have been loaded,
-    /// or attempted. Should always be true,
-    /// except when starting the app.
-    // cache_loaded: bool,
     /// 0. How many notebooks have been sent to load
     /// 1. How many notebooks are waiting for titles.
     /// 2. How many notebooks have been loaded.
     /// 3. Message to display
     note_loading_status: Option<(usize, usize, usize, String)>,
-    /// 0. How far along we are (0, 1)
+    /// 0. How far along we are [0, 1]
     /// 1. Message to display.
     note_exp_status: Option<(f32, String)>,
 }

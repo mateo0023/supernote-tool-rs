@@ -25,6 +25,8 @@ pub struct AppCache {
 #[derive(Deserialize)]
 struct AppCacheV2 {
     notebooks: HashMap<String, HashMap<u64, TitleCacheV2>>,
+    /// Left dead for backwards compatibility.
+    #[allow(dead_code)]
     combine_pdfs: bool,
 }
 

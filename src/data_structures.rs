@@ -21,7 +21,20 @@ use tokio::sync::RwLock;
 use crate::exporter::page_to_commands;
 use crate::ColorMap;
 
-pub type NotebookReturn = (Notebook, Metadata, Vec<(u64, Vec<Stroke>)>);
+/// It contains:
+/// 
+/// 0. [Notebook]
+/// 1. [Metadata]
+/// 2. A vector with the ([`page_id_`](Page::page_id), [`Stroke`]s)
+pub type NotebookReturn = (Notebook, Metadata, Vec<(u64, Option<Vec<Stroke>>)>);
+
+/// A tuple type that contains:
+/// 
+/// 0. [Page]
+/// 1. `(page_id, strokes)`
+///    0. [`page_id`](Page::page_id)
+///    1. `Option<Vec<Stroke>>`, see [Stroke].
+pub type PageAndStroke = (Page, (u64, Option<Vec<Stroke>>));
 
 pub mod file_format_consts {
     pub const PAGE_HEIGHT: usize = 1872;
@@ -328,7 +341,7 @@ impl TitleCollection {
     pub async fn transcribe_titles(
         metadata: Metadata, data: Vec<u8>,
         cache: Option<NotebookCache>, config: Arc<RwLock<ServerConfig>>,
-        page_data: Vec<(u64, Vec<Stroke>)>,
+        page_data: Vec<(u64, Option<Vec<Stroke>>)>,
         file_name: String,
     ) -> Result<Self, Box<dyn Error>> {
         let note_id = metadata.file_id;
@@ -443,7 +456,7 @@ impl Title {
     /// 
     /// # Panics
     /// It may panic when calling [Title::from_meta_no_transcript]
-    pub async fn get_vec_from_meta(metadata: Metadata, file: Vec<u8>, page_data: Vec<(u64, Vec<Stroke>)>, cache: Option<&NotebookCache>, config: Arc<RwLock<ServerConfig>>) -> Result<Vec<Title>, Box<dyn Error>> {
+    pub async fn get_vec_from_meta(metadata: Metadata, file: Vec<u8>, page_data: Vec<(u64, Option<Vec<Stroke>>)>, cache: Option<&NotebookCache>, config: Arc<RwLock<ServerConfig>>) -> Result<Vec<Title>, Box<dyn Error>> {
         match &metadata.footer.titles {
             Some(v) => {
                 let mut f: Vec<_> = vec![];
@@ -451,11 +464,16 @@ impl Title {
                     let title = Title::from_meta_no_transcript(metadata.clone(), &file, cache)?;
                     f.push(
                         if let Transciption::None = &title.name {
-                            let strokes = stroke::clone_strokes_contained(
-                                &page_data[title.page_index].1,
-                                title.coords
-                            );
-                            title.transcribe(strokes, config.clone()).boxed()
+                            match &page_data[title.page_index].1 {
+                                Some(strokes) => {
+                                    let strokes = stroke::clone_strokes_contained(
+                                        strokes,
+                                        title.coords
+                                    );
+                                    title.transcribe(strokes, config.clone()).boxed()
+                                },
+                                None => async {title}.boxed(),
+                            }
                         } else {
                             async {title}.boxed()
                         }
@@ -632,18 +650,18 @@ impl PageOrCommand {
 
 impl Page {
     /// Given al vector of [page metadata](metadata::PageMeta) it will return a vector of [pages](Page).
-    pub fn get_vec_from_meta(metadata: &[metadata::PageMeta], file: &[u8]) -> Vec<(Page, (u64, Vec<Stroke>))> {
+    pub fn get_vec_from_meta(metadata: &[metadata::PageMeta], file: &[u8]) -> Vec<PageAndStroke> {
         metadata.iter().map(|meta| Page::from_meta(meta, file)).collect()
     }
 
     /// Given a [PageMeta](metadata::PageMeta) it returns a [Page].
-    pub fn from_meta(metadata: &metadata::PageMeta, file: &[u8]) -> (Self, (u64, Vec<Stroke>)) {
+    pub fn from_meta(metadata: &metadata::PageMeta, file: &[u8]) -> (Self, (u64, Option<Vec<Stroke>>)) {
         // Page might be empty.
-        let totalpath = match  extract_key_and_read(file, &metadata.page_info, "TOTALPATH") {
-            Some(paths) => 
-                stroke::Stroke::process_page(paths).expect("Failed to process the strokes in page"),
-            None => vec![],
-        };
+        let totalpath = extract_key_and_read(file, &metadata.page_info, "TOTALPATH")
+            .map(|paths|
+                stroke::Stroke::process_page(paths)
+                    .expect("Failed to process the strokes in page")
+            );
         let page_id = hash(metadata.page_info.get("PAGEID").unwrap()[0].as_bytes());
         (Page {
             // recogn_file: extract_key_and_read(file, &metadata.page_info, "RECOGNFILE"),
