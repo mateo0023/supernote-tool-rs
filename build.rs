@@ -8,7 +8,10 @@ fn main() {
     println!("cargo:rustc-link-lib=static=potrace");
 
     // Specify the path to where the library is located
-    println!("cargo:rustc-link-search=./potrace/");
+    #[cfg(target_os = "windows")]
+    println!("cargo:rustc-link-search=./potrace/windows");
+    #[cfg(target_os = "macos")]
+    println!("cargo:rustc-link-search=./potrace/macos");
 
     // Specify the include path for header files
     let include_path = "./potrace/include";
