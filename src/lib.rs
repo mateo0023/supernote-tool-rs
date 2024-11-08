@@ -41,8 +41,9 @@ pub fn start_app() {
             viewport: egui::ViewportBuilder { icon: Some(ui::icon::get_icon().into()), ..Default::default()  },
             ..Default::default()
         },
-        Box::new(|_ctx| {
-            Ok(Box::new(ui::MyApp::new()))
+        Box::new(|ctx| {
+            use raw_window_handle::HasWindowHandle;
+            Ok(Box::new(ui::MyApp::new(ctx.window_handle().ok())))
         })
     );
 }
@@ -57,7 +58,7 @@ pub fn sync_work(
     let config = Arc::new(RwLock::new(config));
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     let results = paths.into_iter()
-        .map(|path| load(path))
+        .map(load)
         .map(|n_res| match n_res {
             Ok((
                 note, metadata,

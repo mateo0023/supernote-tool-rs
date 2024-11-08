@@ -22,7 +22,7 @@ impl AppConfig {
     pub fn from_path(p: PathBuf) -> Result<Self, Box<dyn Error>> {
         use std::io::Read;
         let mut text = String::new();
-        std::fs::File::open(&p)?.read_to_string(&mut text)?;
+        std::fs::File::open(p)?.read_to_string(&mut text)?;
         let cache = back_compat_deserialize!(text.as_str(), ServerConfig, AppConfig);
         cache.ok_or("Failed to deserialize".into())
     }
@@ -48,19 +48,6 @@ impl From<&mut MyApp> for AppConfig {
             combine_pdfs: value.combine_pdfs,
             out_name: value.out_name.clone(),
             show_only_empty: value.show_only_empty,
-        }
-    }
-}
-
-impl From<AppConfig> for MyApp {
-    fn from(value: AppConfig) -> Self {
-        MyApp {
-            server_config: value.server_config,
-            out_folder: value.out_folder,
-            combine_pdfs: value.combine_pdfs,
-            out_name: value.out_name,
-            show_only_empty: value.show_only_empty,
-            ..Default::default()
         }
     }
 }

@@ -76,7 +76,7 @@ impl AppCache {
     pub fn from_path(path: PathBuf) -> Result<AppCache, Box<dyn Error>> {
         use std::io::Read;
         let mut text = String::new();
-        std::fs::File::open(&path)?.read_to_string(&mut text)?;
+        std::fs::File::open(path)?.read_to_string(&mut text)?;
         let cache = back_compat_deserialize!(text.as_str(), AppCacheV1, AppCacheV2, AppCache);
         cache.ok_or("Failed to deserialize".into())
     }

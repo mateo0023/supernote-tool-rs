@@ -4,6 +4,7 @@ use rfd::FileDialog;
 use directories::ProjectDirs;
 use ui_settings::AppConfig;
 use muda::{Menu, MenuItem, Submenu};
+use raw_window_handle::WindowHandle;
 
 use crate::data_structures::{ServerConfig, Title, TitleCollection, TitleLevel, Transciption};
 use crate::error::*;
@@ -17,6 +18,7 @@ const TRANSCRIPT_FILE_N: &str = "transcript.json";
 const CONFIG_FILE_N: &str = "config.json";
 
 pub struct MyApp {
+    #[cfg(target_os = "macos")]
     context_menu: CtxMenuIds,
     server_config: ServerConfig,
     scheduler: Scheduler,
@@ -95,25 +97,49 @@ pub fn get_project_dir() -> ProjectDirs {
 
 impl MyApp {
     /// Loads settings and data from the directories (following OS Folder structure).
-    pub fn new() -> Self {
+    pub fn new(w_handle: Option<WindowHandle<'_>>) -> Self {
         let directories = get_project_dir();
         std::fs::create_dir_all(directories.data_dir()).unwrap();
         std::fs::create_dir_all(directories.config_dir()).unwrap();
         let cache_path = directories.data_dir().join(TRANSCRIPT_FILE_N);
         let scheduler = Scheduler::new(Some(cache_path));
         let settings_path = directories.config_dir().join(CONFIG_FILE_N);
-        let conf: AppConfig = match std::fs::File::open(settings_path) {
+        let AppConfig { server_config, out_folder, combine_pdfs, out_name, show_only_empty } = match std::fs::File::open(settings_path) {
             Ok(rdr) => match serde_json::from_reader(rdr) {
                 Ok(config) => Some(config),
                 Err(_) => None,
             },
             Err(_) => None,
         }.unwrap_or_default();
+
+        #[cfg(target_os = "macos")]
+        let context_menu = CtxMenuIds::new();
+
         MyApp {
             scheduler,
             directories,
-            ..conf.into()
+            #[cfg(target_os = "macos")]
+            context_menu,
+            server_config,
+            notebooks: vec![],
+            out_folder,
+            out_err: None,
+            combine_pdfs,
+            out_name,
+            show_only_empty,
+            focused_id: None,
+            note_loading_status: None,
+            note_exp_status: None,
         }
+    }
+
+    fn load_config(&mut self, conf: AppConfig) {
+        let AppConfig { server_config, out_folder, combine_pdfs, out_name, show_only_empty } = conf;
+        self.server_config = server_config;
+        self.out_folder = out_folder;
+        self.combine_pdfs = combine_pdfs;
+        self.out_name = out_name;
+        self.show_only_empty = show_only_empty;
     }
 
     fn add_err<E: ToString>(&mut self, e: E) {
@@ -264,6 +290,7 @@ impl MyApp {
 
 impl eframe::App for MyApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        #[cfg(target_os = "macos")]
         if let Ok(event) = muda::MenuEvent::receiver().try_recv() {
             match event.id {
                 id if id == self.context_menu.open_notes.id() => {
@@ -280,12 +307,8 @@ impl eframe::App for MyApp {
                 },
                 id if id == self.context_menu.load_config.id() => if let Some(p) = FileDialog::new().add_filter("Config", &["json"]).pick_file() {
                     match AppConfig::from_path(p) {
-                        Ok(AppConfig { server_config, out_folder, combine_pdfs, out_name, show_only_empty }) => {
-                            self.server_config = server_config;
-                            self.out_folder = out_folder;
-                            self.combine_pdfs = combine_pdfs;
-                            self.out_name = out_name;
-                            self.show_only_empty = show_only_empty;
+                        Ok(conf) => {
+                            self.load_config(conf);
                             self.save_settings();
                         },
                         Err(e) => self.add_err(e),
@@ -339,6 +362,27 @@ impl eframe::App for MyApp {
                         self.package_and_export();
                     }
                 });
+
+                #[cfg(target_os = "windows")]
+                ui.vertical(|ui| {
+                    if ui.button("Load external transcriptions").clicked() {
+                        if let Some(path) = FileDialog::new().add_filter("Transcripts", &["json"]).pick_file() {
+                            self.load_cache(path);
+                        }
+                    }
+                    if ui.button("Load Config").clicked() {
+                        if let Some(p) = FileDialog::new().add_filter("Config", &["json"]).pick_file() {
+                            match AppConfig::from_path(p) {
+                                Ok(conf) => {
+                                    self.load_config(conf);
+                                    self.save_settings();
+                                },
+                                Err(e) => self.add_err(e),
+                            }
+                        }
+                    }
+                })
+
             });
 
             self.check_messages(ui, ctx);
@@ -442,26 +486,6 @@ impl eframe::App for MyApp {
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.save_settings();
-    }
-}
-
-impl Default for MyApp {
-    fn default() -> Self {
-        MyApp {
-            context_menu: CtxMenuIds::new(),
-            scheduler: Scheduler::default(),
-            notebooks: vec![],
-            server_config: ServerConfig::default(),
-            directories: get_project_dir(),
-            out_folder: None,
-            out_err: None,
-            out_name: "EXPORT_FILE".to_string(),
-            show_only_empty: false,
-            focused_id: None,
-            combine_pdfs: true,
-            note_loading_status: None,
-            note_exp_status: None,
-        }
     }
 }
 
@@ -666,22 +690,12 @@ impl TitleEditor {
 }
 
 impl CtxMenuIds {
-    pub fn new() -> Self {
+    #[cfg(target_os = "windows")]
+    pub fn new(w_handle: WindowHandle<'_>) -> Self {
         let menu = Menu::new();
-        #[cfg(target_os = "macos")]
-        {
-            let app_name = Submenu::new("Supernote Tool", true);
-            menu.append(&app_name).unwrap();
-        }
 
         let file_menu = Submenu::new("File", true);
-        #[cfg(target_os = "macos")]
-        let open_notes = MenuItem::new("Open", true, accel!(SUPER, KeyO));
-        #[cfg(target_os = "macos")]
-        let export_notes = MenuItem::new("Export", true, accel!(SUPER, KeyS));
-        #[cfg(target_os = "windows")]
         let open_notes = MenuItem::new("Open", true, accel!(CONTROL, KeyO));
-        #[cfg(target_os = "windows")]
         let export_notes = MenuItem::new("Export", true, accel!(CONTROL, KeyS));
         let load_config = MenuItem::new("Load Settings", true, None);
         file_menu.append(&open_notes).unwrap();
@@ -696,16 +710,58 @@ impl CtxMenuIds {
 
         menu.append(&file_menu).unwrap();
         menu.append(&trans_menu).unwrap();
-        #[cfg(target_os = "windows")]
-        unsafe {
-            if let Some(window) = ctx {
-                menu.init_for_hwnd(window.hwnd() as isize);
+
+        if let raw_window_handle::RawWindowHandle::Win32(handle) = w_handle.as_raw() {
+            unsafe {
+                menu.init_for_hwnd(handle.hwnd.get()).unwrap();
             }
+        } else {
+            panic!("Unkown Window Handle {:?}", w_handle)
         }
+
+
+        Self {
+            open_notes,
+            export_notes,
+            load_config,
+            load_transcript,
+            save_transcript,
+        }
+    }
+    
+    #[cfg(target_os = "macos")]
+    pub fn new() -> Self {
+        let menu = Menu::new();
+        let app_name = Submenu::new("Supernote Tool", true);
+        menu.append(&app_name).unwrap();
+
+        let file_menu = Submenu::new("File", true);
+        let open_notes = MenuItem::new("Open", true, accel!(SUPER, KeyO));
+        let export_notes = MenuItem::new("Export", true, accel!(SUPER, KeyS));
+        let load_config = MenuItem::new("Load Settings", true, None);
+        file_menu.append(&open_notes).unwrap();
+        file_menu.append(&export_notes).unwrap();
+        file_menu.append(&load_config).unwrap();
+
+        let trans_menu = Submenu::new("Transcriptions", true);
+        let load_transcript = MenuItem::new("Load External Transcriptions", true, None);
+        let save_transcript = MenuItem::new("Export Saved Transcriptions", true, None);
+        trans_menu.append(&load_transcript).unwrap();
+        trans_menu.append(&save_transcript).unwrap();
+
+        menu.append(&file_menu).unwrap();
+        menu.append(&trans_menu).unwrap();
+
 
         #[cfg(target_os = "macos")]
         {
+        
+        #[cfg(target_os = "macos")]
+        {
             menu.init_for_nsapp();
+            menu.init_for_nsapp();
+        }
+        menu.init_for_nsapp();
         }
 
         Self {
