@@ -142,7 +142,7 @@ struct StreamGuard<T: Future> {
 }
 
 impl Scheduler {
-    pub fn new() -> Self {
+    pub fn new(cache_path: Option<PathBuf>) -> Self {
         let (command_sender, mut command_receiver) = mpsc::channel::<SchedulerCommands>(MSG_BUFFER);
         let (response_sender, response_receiver) = mpsc::channel::<SchedulerResponse>(MSG_BUFFER);
 
@@ -151,7 +151,7 @@ impl Scheduler {
                 .enable_all().build().unwrap();
 
             rt.block_on(async {
-                let mut scheduler = SchedulerIn::new(response_sender.clone());
+                let mut scheduler = SchedulerIn::new(response_sender.clone(), cache_path);
                 
                 loop {
                     use SchedulerResponse::*;
@@ -215,18 +215,23 @@ impl Scheduler {
 
 impl Default for Scheduler {
     fn default() -> Self {
-        Self::new()
+        Self::new(None)
     }
 }
 
 impl SchedulerIn {
-    fn new(response_sender: mpsc::Sender<SchedulerResponse>) -> Self {
+    fn new(response_sender: mpsc::Sender<SchedulerResponse>, cache_path: Option<PathBuf>) -> Self {
         let config: Arc<RwLock<ServerConfig>> = Default::default();
-        let app_cache = Arc::new(RwLock::const_new(AppCache::default()));
+        let app_cache = Arc::new(RwLock::const_new(
+            match cache_path.clone() {
+                Some(p) => AppCache::from_path(p).unwrap_or_default(),
+                None => AppCache::default(),
+            }
+        ));
         let loader_template = SingleNoteLoader::new(response_sender.clone(), app_cache.clone(), config.clone());
         Self {
             app_cache,
-            app_cache_path: Arc::new(RwLock::const_new(None)),
+            app_cache_path: Arc::new(RwLock::const_new(cache_path)),
             config,
             loaded_notebooks: Default::default(),
             loaded_titles: Default::default(),
@@ -255,7 +260,7 @@ impl SchedulerIn {
             SchedulerCommands::LoadCache(path_buf) => {
                 misc_task!(self(app_cache, response_sender, app_cache_path) => {
                     use SchedulerResponse::CahceMessage as Msg;
-                    let _ = app_cache_path.write().await.insert(path_buf.clone());
+                    let _ = app_cache_path.write().await.get_or_insert(path_buf.clone());
                     match AppCache::from_path(path_buf) {
                         Ok(cache) => {
                             response_sender.send(Msg(CacheMsg::Loaded))
@@ -281,7 +286,6 @@ impl SchedulerIn {
                         );
                     }
                     let handle = tasks::export_notes(ids, export_settings, loaded_notebooks, loaded_titles, response_sender.clone());
-                    
                     if let Some(p) = app_cache_path.read().await.as_ref() {
                         use SchedulerResponse::CahceMessage as Msg;
 

@@ -1,7 +1,9 @@
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
 
 use rfd::FileDialog;
+use directories::ProjectDirs;
+use ui_settings::AppConfig;
+use muda::{Menu, MenuItem, Submenu};
 
 use crate::data_structures::{ServerConfig, Title, TitleCollection, TitleLevel, Transciption};
 use crate::error::*;
@@ -9,11 +11,17 @@ use crate::data_structures::cache::*;
 use crate::scheduler::*;
 
 pub mod icon;
+mod ui_settings;
+
+const TRANSCRIPT_FILE_N: &str = "transcript.json";
+const CONFIG_FILE_N: &str = "config.json";
 
 pub struct MyApp {
+    context_menu: CtxMenuIds,
     server_config: ServerConfig,
     scheduler: Scheduler,
     notebooks: Vec<(TitleCollection, TitleHolder)>,
+    directories: ProjectDirs,
     /// The folder to export the PDF(s)
     out_folder: Option<PathBuf>,
     /// Any error messages to display.
@@ -21,14 +29,10 @@ pub struct MyApp {
     combine_pdfs: bool,
     /// The name to save the Merged PDF
     out_name: String,
-    /// The path to the [AppCache]
-    settings_path: Option<PathBuf>,
     show_only_empty: bool,
     /// The [egui::Id] of the [TitleEditor]
     /// currently in focus.
     focused_id: Option<egui::Id>,
-    cache_loading: ProcessState,
-    cache_saving: ProcessState,
     /// 0. How many notebooks have been sent to load
     /// 1. How many notebooks are waiting for titles.
     /// 2. How many notebooks have been loaded.
@@ -37,18 +41,6 @@ pub struct MyApp {
     /// 0. How far along we are [0, 1]
     /// 1. Message to display.
     note_exp_status: Option<(f32, String)>,
-}
-
-#[derive(Default, Clone, Copy)]
-enum ProcessState {
-    /// It's processing (unkown progress)
-    Processing,
-    /// Process is done, but we need some timeout
-    /// to display result.
-    TimeOut(Instant),
-    /// The process is fully done.
-    #[default]
-    Done,
 }
 
 #[derive(Default)]
@@ -73,38 +65,63 @@ pub struct TitleEditor {
     was_edited: bool,
 }
 
+struct CtxMenuIds {
+    open_notes: MenuItem,
+    export_notes: MenuItem,
+    load_config: MenuItem,
+    load_transcript: MenuItem,
+    save_transcript: MenuItem,
+}
+
 /// Loads the as a texture with the given context and returns the [TextureHandle](egui::TextureHandle)
 /// or [DecoderError].
-pub fn add_image(bitmap: &[u8], width: usize, height: usize, hash: u64, ctx: &egui::Context)
+fn add_image(bitmap: &[u8], width: usize, height: usize, hash: u64, ctx: &egui::Context)
     -> Result<egui::TextureHandle, DecoderError>
 {
     let image = egui::ColorImage::from_rgba_unmultiplied([width, height], bitmap);
     Ok(ctx.load_texture(format!("title#{}", hash), image, egui::TextureOptions::default()))
 }
 
+/// Creates a new [ProjectDirs] with appropiate configuration.
+/// 
+/// # Tests
+/// ```
+/// assert_eq!(get_project_dir(), ProjectDirs::from("io.github", "mateo0023", "Supernote Tool").unwrap())
+/// ```
+#[inline]
+pub fn get_project_dir() -> ProjectDirs {
+    ProjectDirs::from("io.github", "mateo0023", "Supernote Tool").unwrap()
+}
+
 impl MyApp {
+    /// Loads settings and data from the directories (following OS Folder structure).
     pub fn new() -> Self {
+        let directories = get_project_dir();
+        std::fs::create_dir_all(directories.data_dir()).unwrap();
+        std::fs::create_dir_all(directories.config_dir()).unwrap();
+        let cache_path = directories.data_dir().join(TRANSCRIPT_FILE_N);
+        let scheduler = Scheduler::new(Some(cache_path));
+        let settings_path = directories.config_dir().join(CONFIG_FILE_N);
+        let conf: AppConfig = match std::fs::File::open(settings_path) {
+            Ok(rdr) => match serde_json::from_reader(rdr) {
+                Ok(config) => Some(config),
+                Err(_) => None,
+            },
+            Err(_) => None,
+        }.unwrap_or_default();
         MyApp {
-            scheduler: Scheduler::new(),
-            notebooks: vec![],
-            server_config: ServerConfig::from_path_or_default("./my_script_keys.json"),
-            out_folder: None,
-            out_err: None,
-            out_name: String::new(),
-            settings_path: None,
-            show_only_empty: false,
-            focused_id: None,
-            combine_pdfs: true,
-            cache_loading: ProcessState::Done,
-            cache_saving: ProcessState::Done,
-            note_loading_status: None,
-            note_exp_status: None,
+            scheduler,
+            directories,
+            ..conf.into()
         }
     }
 
-    pub fn load_cache(&mut self, path: PathBuf) {
+    fn add_err<E: ToString>(&mut self, e: E) {
+        self.out_err.get_or_insert(vec![]).push(e.to_string());
+    }
+
+    fn load_cache(&mut self, path: PathBuf) {
         self.scheduler.load_cache(path);
-        self.cache_loading = ProcessState::Processing;
     }
 
     /// Adds a notebook to the app.
@@ -112,7 +129,7 @@ impl MyApp {
     /// 1. Update the cache & notebook (see [AppCache::load_or_add]).
     /// 2. Create the [title editors](TitleHolder).
     /// 3. Shift the pages of the notebooks, in case of merge when exporting.
-    pub fn add_notebook(&mut self, notebook: TitleCollection, ui: &egui::Ui, ctx: &egui::Context) {
+    fn add_notebook(&mut self, notebook: TitleCollection, ui: &egui::Ui, ctx: &egui::Context) {
         let new_titles = TitleHolder::from_notebook(&notebook, ui, ctx);
         
         self.notebooks.push((notebook, new_titles));
@@ -123,10 +140,7 @@ impl MyApp {
     /// into a PDF (or PDFs).
     fn package_and_export(&mut self) {
         self.update_cache_from_editor();
-        if let Some(p) = self.settings_path.as_ref() {
-            self.scheduler.save_cache(p.clone());
-            self.cache_saving = ProcessState::Processing;
-        }
+        self.scheduler.save_cache(self.directories.data_dir().with_file_name(TRANSCRIPT_FILE_N));
 
         self.update_note_from_holder();
 
@@ -140,7 +154,6 @@ impl MyApp {
                     paths.push((note.note_id, new_path));
                 }
                 self.note_exp_status = Some((0., "Loading Notebooks".to_string()));
-                self.cache_saving = ProcessState::Processing;
                 self.scheduler.save_notebooks(
                     notes,
                     ExportSettings::Seprate(paths)
@@ -148,11 +161,23 @@ impl MyApp {
             }
         } else if let Some(path) = &self.out_folder {
             self.note_exp_status = Some((0., "Loading Notebooks".to_string()));
-            self.cache_saving = ProcessState::Processing;
             self.scheduler.save_notebooks(
                 self.notebooks.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>(),
                 ExportSettings::Merged(path.join(format!("{}.pdf", self.out_name)))
             );
+        }
+    }
+
+    fn save_settings(&mut self) {
+        let config: AppConfig = self.into();
+        let path = self.directories.config_dir().join(CONFIG_FILE_N);
+        let res = match std::fs::File::create(path) {
+            Ok(writer) => 
+                serde_json::to_writer(writer, &config).map_err(|e| e.to_string()),
+            Err(e) => Err(e.to_string()),
+        };
+        if let Err(e) = res {
+            self.add_err(e);
         }
     }
 
@@ -204,30 +229,28 @@ impl MyApp {
                         if let Some((_, _, done, _)) = self.note_loading_status.as_mut() {
                             *done += 1;
                         }
-                        self.out_err.get_or_insert(vec![]).push(
+                        self.add_err(
                             format!("A notebook failed to load due to {}", msg)
                         );
                     },
                     messages::NoteMsg::FullyLoaded(_) => (),
                 },
                 CahceMessage(cache_msg) => match cache_msg {
-                    messages::CacheMsg::Loaded => self.cache_loading.one_sec(),
+                    messages::CacheMsg::Loaded => (),
                     messages::CacheMsg::FailedToLoad(msg) => {
-                        self.cache_loading = ProcessState::Done;
-                        self.out_err.get_or_insert(vec![]).push(
+                        self.add_err(
                             format!("Cache Failed to load due to {}", msg)
                         )
                     },
                     messages::CacheMsg::FailedToSave(msg) => {
-                        self.cache_saving = ProcessState::Done;
-                        self.out_err.get_or_insert(vec![]).push(
+                        self.add_err(
                             format!("Cache failed to save due to {}", msg)
                         )
                     },
-                    messages::CacheMsg::Saved => self.cache_saving.one_sec(),
+                    messages::CacheMsg::Saved => (),
                 },
                 ExportMessage(exp_msg) => match exp_msg {
-                    messages::ExpMsg::Error(err) => {self.out_err.get_or_insert(vec![]).push(err);},
+                    messages::ExpMsg::Error(err) => {self.add_err(err);},
                     messages::ExpMsg::CreatingDocs(p) => self.note_exp_status = Some((p * 0.3, "Creating PDF(s)".to_string())),
                     messages::ExpMsg::CompressingDocs(p) => self.note_exp_status = Some((0.3 + p * 0.5, "Compressing PDF(s)".to_string())),
                     messages::ExpMsg::SavingDocs(p) => self.note_exp_status = Some((0.8 + p * 0.2, "Saving PDF(s)".to_string())),
@@ -241,7 +264,48 @@ impl MyApp {
 
 impl eframe::App for MyApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if let Ok(event) = muda::MenuEvent::receiver().try_recv() {
+            match event.id {
+                id if id == self.context_menu.open_notes.id() => {
+                    if let Some(path_list) = FileDialog::new().add_filter("Supernote File", &["note"]).pick_files() {
+                        self.note_loading_status = Some((path_list.len(), 0, 0, format!("Loading {} files", path_list.len())));
+                        self.scheduler.load_notebooks(path_list, self.server_config.clone());
+                    }
+                },
+                id if id == self.context_menu.export_notes.id() => {
+                    if self.out_folder.is_none() {
+                        self.out_folder = FileDialog::new().pick_folder();
+                    }
+                    self.package_and_export();
+                },
+                id if id == self.context_menu.load_config.id() => if let Some(p) = FileDialog::new().add_filter("Config", &["json"]).pick_file() {
+                    match AppConfig::from_path(p) {
+                        Ok(AppConfig { server_config, out_folder, combine_pdfs, out_name, show_only_empty }) => {
+                            self.server_config = server_config;
+                            self.out_folder = out_folder;
+                            self.combine_pdfs = combine_pdfs;
+                            self.out_name = out_name;
+                            self.show_only_empty = show_only_empty;
+                            self.save_settings();
+                        },
+                        Err(e) => self.add_err(e),
+                    }
+                },
+                id if id == self.context_menu.load_transcript.id() => if let Some(path) = FileDialog::new().add_filter("Transcripts", &["json"]).pick_file() {
+                    self.load_cache(path);
+                },
+                id if id == self.context_menu.save_transcript.id() => if let Some(path) = FileDialog::new().add_filter("Transcripts", &["json"]).pick_file() {
+                    self.scheduler.save_cache(path);
+                },
+                _ => (),
+            }
+        }
+
         egui::CentralPanel::default().show(ctx, |ui| {
+            if self.server_config == ServerConfig::default() {
+                ui.label("Warning: using, default MyScript API Keys");
+            }
+    
             // Load/Save Export buttons
             ui.horizontal(|ui| {
                 // Add/Remove Notebooks
@@ -274,63 +338,6 @@ impl eframe::App for MyApp {
                     if self.out_folder.is_some() && !self.notebooks.is_empty() && ui.button("Export to PDF").clicked() {
                         self.package_and_export();
                     }
-                });
-
-                // Cache Buttons
-                ui.vertical(|ui| {
-                    ui.horizontal( |ui| {
-                        if ui.button("Load Transcriptions").clicked() {
-                            if let Some(path) = FileDialog::new().add_filter("Transcriptions", &["json"]).pick_file() {
-                                self.load_cache(path);
-                            }
-                        }
-                        match self.cache_loading {
-                            ProcessState::Processing => {
-                                ui.add(egui::Spinner::new());
-                            },
-                            ProcessState::TimeOut(end) => if Instant::now() < end {
-                                ui.label(egui::RichText::new("✅")
-                                    .size(16.)
-                                );
-                            },
-                            ProcessState::Done => (),
-                        }
-
-                    });
-    
-                    ui.horizontal(|ui| {
-                        if ui.button("Save Transcriptions").clicked() {
-                            let file_dialog = match &self.settings_path {
-                                Some(path) => {
-                                    let base_dialog = FileDialog::new().add_filter("JSON", &["json"]);
-                                    match (path.parent(), path.file_name()) {
-                                        (None, None) => base_dialog,
-                                        (None, Some(file_name)) => base_dialog.set_file_name(file_name.to_str().unwrap()),
-                                        (Some(path), None) => base_dialog.set_directory(path),
-                                        (Some(path), Some(file_name)) => base_dialog.set_directory(path).set_file_name(file_name.to_str().unwrap()),
-                                    }
-                                },
-                                None => FileDialog::new().add_filter("JSON", &["json"]),
-                            };
-                            if let Some(out_path) = file_dialog.save_file() {
-                                self.scheduler.save_cache(out_path.clone());
-                                self.cache_saving = ProcessState::Processing;
-                                self.settings_path = Some(out_path);
-                            }
-                        }
-                    
-                        match self.cache_saving {
-                            ProcessState::Processing => {
-                                ui.add(egui::Spinner::new());
-                            },
-                            ProcessState::TimeOut(end) => if Instant::now() < end {
-                                ui.label(egui::RichText::new("✅")
-                                    .size(16.)
-                                );
-                            },
-                            ProcessState::Done => (),
-                        }
-                    })
                 });
             });
 
@@ -430,16 +437,31 @@ impl eframe::App for MyApp {
                         .paint_at(ui, rect);
                 }
             });
-        
         });
+    }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.save_settings();
     }
 }
 
-impl ProcessState {
-    pub fn one_sec(&mut self) {
-        *self = ProcessState::TimeOut(
-            Instant::now().checked_add(Duration::from_secs(1)).unwrap()
-        );
+impl Default for MyApp {
+    fn default() -> Self {
+        MyApp {
+            context_menu: CtxMenuIds::new(),
+            scheduler: Scheduler::default(),
+            notebooks: vec![],
+            server_config: ServerConfig::default(),
+            directories: get_project_dir(),
+            out_folder: None,
+            out_err: None,
+            out_name: "EXPORT_FILE".to_string(),
+            show_only_empty: false,
+            focused_id: None,
+            combine_pdfs: true,
+            note_loading_status: None,
+            note_exp_status: None,
+        }
     }
 }
 
@@ -643,3 +665,55 @@ impl TitleEditor {
     }
 }
 
+impl CtxMenuIds {
+    pub fn new() -> Self {
+        let menu = Menu::new();
+        #[cfg(target_os = "macos")]
+        {
+            let app_name = Submenu::new("Supernote Tool", true);
+            menu.append(&app_name).unwrap();
+        }
+
+        let file_menu = Submenu::new("File", true);
+        #[cfg(target_os = "macos")]
+        let open_notes = MenuItem::new("Open", true, accel!(SUPER, KeyO));
+        #[cfg(target_os = "macos")]
+        let export_notes = MenuItem::new("Export", true, accel!(SUPER, KeyS));
+        #[cfg(target_os = "windows")]
+        let open_notes = MenuItem::new("Open", true, accel!(CONTROL, KeyO));
+        #[cfg(target_os = "windows")]
+        let export_notes = MenuItem::new("Export", true, accel!(CONTROL, KeyS));
+        let load_config = MenuItem::new("Load Settings", true, None);
+        file_menu.append(&open_notes).unwrap();
+        file_menu.append(&export_notes).unwrap();
+        file_menu.append(&load_config).unwrap();
+
+        let trans_menu = Submenu::new("Transcriptions", true);
+        let load_transcript = MenuItem::new("Load External Transcriptions", true, None);
+        let save_transcript = MenuItem::new("Export Saved Transcriptions", true, None);
+        trans_menu.append(&load_transcript).unwrap();
+        trans_menu.append(&save_transcript).unwrap();
+
+        menu.append(&file_menu).unwrap();
+        menu.append(&trans_menu).unwrap();
+        #[cfg(target_os = "windows")]
+        unsafe {
+            if let Some(window) = ctx {
+                menu.init_for_hwnd(window.hwnd() as isize);
+            }
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            menu.init_for_nsapp();
+        }
+
+        Self {
+            open_notes,
+            export_notes,
+            load_config,
+            load_transcript,
+            save_transcript,
+        }
+    }
+}

@@ -1,6 +1,6 @@
 fn async_bench() {
     use supernote_tool_rs::*;
-    let mut sch = Scheduler::new();
+    let mut sch = Scheduler::new(None);
     sch.load_notebooks(
         vec!["./test/01. Asset Allocation.note".into()],
         ServerConfig::default()

@@ -30,7 +30,7 @@ struct StrokeGroup {
 /// [GitHub](https://github.com/MyScript/iinkTS/blob/master/examples/server-configuration.json).
 /// 
 /// ### Use default values at your own risk.
-#[derive(Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct ServerConfig {
     #[serde(rename = "applicationKey")]
     api_key: String,

@@ -6,7 +6,7 @@ use serde::Deserialize;
 /// 
 /// # Usage
 /// 
-/// ```rust
+/// ```no_run
 /// num_enum!{ name <T> {
 ///     variant1 = 0,
 ///     variant2 = 0xF0,
@@ -97,9 +97,6 @@ impl<T> Upgradable<T> for Option<T> {
     }
 }
 
-
-
-/// 
 /// `$text` needs to be a `&str`
 /// 
 /// You need to bring the [`Upgradable`] trait into
@@ -108,5 +105,16 @@ macro_rules! back_compat_deserialize {
     ($text:expr, $($version:ty),+) => {{
         use $crate::macros::Upgradable;
         None$(.upgrade_or_deserialize::<$version>($text))+
+    }};
+}
+
+#[cfg(feature = "gui")]
+/// Creates an [Accelerator](muda::accelerator::Accelerator)
+/// with the `const` [Modifier](muda::accelerator::Modifiers)
+/// and the `key` [Code](muda::accelerator::Code).
+macro_rules! accel {
+    ($mod:ident, $key:ident) => {{
+        use muda::accelerator::{Accelerator, Modifiers, Code};
+        Some(Accelerator::new(Some(Modifiers::$mod), Code::$key))
     }};
 }

@@ -42,11 +42,7 @@ pub fn start_app() {
             ..Default::default()
         },
         Box::new(|_ctx| {
-            let mut app = ui::MyApp::new();
-            if let Some(path) = rfd::FileDialog::new().add_filter("Transcripts", &["json"]).pick_file() {
-                app.load_cache(path);
-            }
-            Ok(Box::new(app))
+            Ok(Box::new(ui::MyApp::new()))
         })
     );
 }
