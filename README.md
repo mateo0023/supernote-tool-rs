@@ -13,7 +13,6 @@ This project is a Rust-based GUI application designed to work with [Supernote](h
 - **Color Remap**: Change from grayscale to colorfull images. Right now it only has default remaping:
   - Light Gray goes to yellow (`#fdfa75`)
   - Dark Gray goes to blue (`#4669d6`)
-- **Optimized for MacOS (Apple Silicon)**: Built and optimized for machines running on Apple Silicon chips. Needs work to integrate potrace's C library when compiling on Windows.
 
 ## Requirements
 - (soft) A [MyScript](https://www.myscript.com) developer account. If you don't have one, the app will use the same API Keys MyScript use for the [demos](https://github.com/MyScript/iinkTS/blob/master/examples/server-configuration.json). You should load a `JSON` containing your API Keys in the following format the format:
@@ -25,8 +24,6 @@ This project is a Rust-based GUI application designed to work with [Supernote](h
 ```
 
 For development only (not needed if using a pre-compiled binary)
-- **Potrace C library**: This project requires the Potrace C library to be installed.
-  - On MacOS `brew install potrace`
 - **Rust 1.54** or later
 - **Cargo** (Rust’s package manager)
 - Additional dependencies as listed in `Cargo.toml`.

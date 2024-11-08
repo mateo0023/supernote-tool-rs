@@ -1,3 +1,4 @@
+#![windows_subsystem = "windows"]
 #[cfg(feature = "gui")]
 fn main() {
     supernote_tool_rs::start_app()
