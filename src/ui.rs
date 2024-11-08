@@ -326,7 +326,7 @@ impl eframe::App for MyApp {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             if self.server_config == ServerConfig::default() {
-                ui.label("Warning: using, default MyScript API Keys");
+                ui.label("Warning: using default MyScript API Keys");
             }
     
             // Load/Save Export buttons
