@@ -445,7 +445,7 @@ impl eframe::App for MyApp {
                 let mut title_bx = vec![];
                 for (_, holder) in self.notebooks.iter_mut() {
                     if holder.is_empty() {
-                        ui.label(format!("File {} contains no titles", holder.file_name));
+                        ui.label(format!("File \"{}\" contains no titles", holder.file_name));
                     } else {
                         ui.collapsing(holder.file_name.clone(), |ui| {
                             let mut used = false;

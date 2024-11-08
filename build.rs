@@ -2,6 +2,8 @@ extern crate bindgen;
 
 use std::env;
 use std::path::PathBuf;
+#[cfg(target_os = "windows")]
+use winresource::WindowsResource;
 
 fn main() {
     // Link statically to libpotrace
@@ -32,4 +34,12 @@ fn main() {
     bindings
         .write_to_file(out_path.join("potrace_bindings.rs"))
         .expect("Couldn't write bindings!");
+
+    #[cfg(target_os = "windows")]
+    if env::var_os("CARGO_CFG_WINDOWS").is_some() {
+        WindowsResource::new()
+            // This path can be absolute, or relative to your crate root.
+            .set_icon("icons/icon.ico")
+            .compile().unwrap();
+    }
 }
