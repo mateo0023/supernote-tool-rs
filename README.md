@@ -16,7 +16,13 @@ This project is a Rust-based GUI application designed to work with [Supernote](h
 - **Optimized for MacOS (Apple Silicon)**: Built and optimized for machines running on Apple Silicon chips. Needs work to integrate potrace's C library when compiling on Windows.
 
 ## Requirements
-- A [MyScript](https://www.myscript.com) subscription. With a `JSON` file in `./my_script_keys.json`. If you don't have that, it'll use the same API Key they use for the demos.
+- (soft) A [MyScript](https://www.myscript.com) developer account. If you don't have one, the app will use the same API Keys MyScript use for the [demos](https://github.com/MyScript/iinkTS/blob/master/examples/server-configuration.json). You should load a `JSON` containing your API Keys in the following format the format:
+```json
+{
+  "applicationKey": "KEY-GOES-HERE-AS-PROVIDED",
+  "hmacKey": "KEY-GOES-HERE-AS-PROVIDED"
+}
+```
 
 For development only (not needed if using a pre-compiled binary)
 - **Potrace C library**: This project requires the Potrace C library to be installed.
@@ -78,7 +84,7 @@ The titles are automatically grouped in the following way:
 
 ![Black, Light Gray, Dark Gray, Striped](./examples/Test%20Doc_Page_3.png)
 
-There's title handwriting recognition done through [MyScript](https://www.myscript.com). Transcription will only be done if you've not yet done so in the loaded "Transcripts" JSON file. You can manually edit titles and even save/load those transcriptions with the "Load/Save Transcriptions" buttons. When exporting, these settings will be automatically saved to the last selected settings file.
+There's title handwriting recognition done through [MyScript](https://www.myscript.com) and can be manually edited. Past transcriptions will be automatically saved/loaded to reduce resource usage.
 
 ## Contributions
 
