@@ -13,7 +13,7 @@ icon = ["./icons/64x64.png", "./icons/128x128.png", "./icons/256x256@2x.png"]
 # The default list of features
 default = ["gui"]
 # The dependencies needed by the GUI.
-gui = ["dep:egui", "dep:eframe", "dep:rfd", "dep:image", "dep:directories", "dep:muda"]
+gui = ["dep:egui", "dep:eframe", "dep:rfd", "dep:image", "dep:directories", "dep:muda", "dep:raw-window-handle"]
 
 [[bench]]
 name = "library_benchmark"
@@ -36,6 +36,7 @@ rfd = {version = "0.15.0", optional = true}
 image = {version = "0.25.2", optional = true}
 directories = {version = "5.0.1", optional = true}
 muda = {version = "0.15.3", optional = true}
+raw-window-handle = {version = "0.6.2", optional = true}
 futures = "0.3.31"
 hex = "0.4.3"
 hmac = "0.12.1"
@@ -49,7 +50,6 @@ sha2 = "0.10.8"
 tokio = {version = "1.40.0", features = ["full"]}
 # Only used in the Command Line (not "gui")
 clap = { version = "4.5.20", features = ["derive"] }
-raw-window-handle = "0.6.2"
 
 [build-dependencies]
 bindgen = "0.70.1"
