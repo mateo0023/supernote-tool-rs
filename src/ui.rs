@@ -24,8 +24,6 @@ pub struct MyApp {
     scheduler: Scheduler,
     notebooks: Vec<(TitleCollection, TitleHolder)>,
     directories: ProjectDirs,
-    /// The folder to export the PDF(s)
-    out_folder: Option<PathBuf>,
     /// Any error messages to display.
     out_err: Option<Vec<String>>,
     combine_pdfs: bool,
@@ -104,7 +102,7 @@ impl MyApp {
         let cache_path = directories.data_dir().join(TRANSCRIPT_FILE_N);
         let scheduler = Scheduler::new(Some(cache_path));
         let settings_path = directories.config_dir().join(CONFIG_FILE_N);
-        let AppConfig { server_config, out_folder, combine_pdfs, out_name, show_only_empty } = match std::fs::File::open(settings_path) {
+        let AppConfig { server_config, combine_pdfs, out_name, show_only_empty } = match std::fs::File::open(settings_path) {
             Ok(rdr) => match serde_json::from_reader(rdr) {
                 Ok(config) => Some(config),
                 Err(_) => None,
@@ -122,7 +120,6 @@ impl MyApp {
             context_menu,
             server_config,
             notebooks: vec![],
-            out_folder,
             out_err: None,
             combine_pdfs,
             out_name,
@@ -134,9 +131,8 @@ impl MyApp {
     }
 
     fn load_config(&mut self, conf: AppConfig) {
-        let AppConfig { server_config, out_folder, combine_pdfs, out_name, show_only_empty } = conf;
+        let AppConfig { server_config, combine_pdfs, out_name, show_only_empty } = conf;
         self.server_config = server_config;
-        self.out_folder = out_folder;
         self.combine_pdfs = combine_pdfs;
         self.out_name = out_name;
         self.show_only_empty = show_only_empty;
@@ -170,8 +166,8 @@ impl MyApp {
 
         self.update_note_from_holder();
 
-        if self.notebooks.len() < 2 || !self.combine_pdfs || self.out_name.is_empty() {
-            if let Some(path) = &self.out_folder {
+        if self.notebooks.len() < 2 || !self.combine_pdfs {
+            if let Some(path) = FileDialog::new().add_filter("PDF", &["pdf"]).pick_folder() {
                 let mut notes = vec![];
                 let mut paths = vec![];
                 for (note, _) in &self.notebooks {
@@ -185,7 +181,11 @@ impl MyApp {
                     ExportSettings::Seprate(paths)
                 );
             }
-        } else if let Some(path) = &self.out_folder {
+        } else if let Some(path) = FileDialog::new()
+            .add_filter("PDF", &["pdf"])
+            .set_file_name(format!("{}.pdf", self.out_name))
+            .save_file()
+        {
             self.note_exp_status = Some((0., "Loading Notebooks".to_string()));
             self.scheduler.save_notebooks(
                 self.notebooks.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>(),
@@ -231,7 +231,6 @@ impl MyApp {
     /// * [`note_loading_status`](MyApp::note_loading_status)
     /// * [`note_exp_status`](MyApp::note_exp_status)
     /// * [`out_err`](MyApp::out_err)
-    /// * [`cache_loading`](MyApp::cache_loading)
     fn check_messages(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         if let Some(msg) = self.scheduler.check_update() {
             use messages::SchedulerResponse::*;
@@ -300,9 +299,6 @@ impl eframe::App for MyApp {
                     }
                 },
                 id if id == self.context_menu.export_notes.id() => {
-                    if self.out_folder.is_none() {
-                        self.out_folder = FileDialog::new().pick_folder();
-                    }
                     self.package_and_export();
                 },
                 id if id == self.context_menu.load_config.id() => if let Some(p) = FileDialog::new().add_filter("Config", &["json"]).pick_file() {
@@ -333,7 +329,7 @@ impl eframe::App for MyApp {
             ui.horizontal(|ui| {
                 // Add/Remove Notebooks
                 ui.vertical(|ui| {
-                    if ui.button("Add File(s)").clicked() {
+                    if ui.button("Load Notebook(s)").clicked() {
                         if let Some(path_list) = FileDialog::new().add_filter("Supernote File", &["note"]).pick_files() {
                             self.note_loading_status = Some((path_list.len(), 0, 0, format!("Loading {} files", path_list.len())));
                             self.scheduler.load_notebooks(path_list, self.server_config.clone());
@@ -350,27 +346,18 @@ impl eframe::App for MyApp {
                 });
                 
                 // Output Folder & Export Buttons
-                ui.vertical(|ui| {
-                    if ui.button(format!(
-                        "{} Output Folder",
-                        if self.out_folder.is_none() {"Add"} else {"Update"}
-                    )).clicked() {
-                        self.out_folder = FileDialog::new().pick_folder();
-                    }
-
-                    if self.out_folder.is_some() && !self.notebooks.is_empty() && ui.button("Export to PDF").clicked() {
-                        self.package_and_export();
-                    }
-                });
+                if ui.button("Export to PDF").clicked() {
+                    self.package_and_export();
+                }
 
                 #[cfg(target_os = "windows")]
                 ui.vertical(|ui| {
-                    if ui.button("Load external transcriptions").clicked() {
+                    if ui.button("Import Title Transcriptions").clicked() {
                         if let Some(path) = FileDialog::new().add_filter("Transcripts", &["json"]).pick_file() {
                             self.load_cache(path);
                         }
                     }
-                    if ui.button("Load Config").clicked() {
+                    if ui.button("Load MyScript API Keys").clicked() {
                         if let Some(p) = FileDialog::new().add_filter("Config", &["json"]).pick_file() {
                             match AppConfig::from_path(p) {
                                 Ok(conf) => {
@@ -695,15 +682,15 @@ impl CtxMenuIds {
         let menu = Menu::new();
 
         let file_menu = Submenu::new("File", true);
-        let open_notes = MenuItem::new("Open", true, accel!(CONTROL, KeyO));
+        let open_notes = MenuItem::new("Load Notebook(s)", true, accel!(CONTROL, KeyO));
         let export_notes = MenuItem::new("Export", true, accel!(CONTROL, KeyS));
-        let load_config = MenuItem::new("Load Settings", true, None);
+        let load_config = MenuItem::new("Load MyScript Keys", true, None);
         file_menu.append(&open_notes).unwrap();
         file_menu.append(&export_notes).unwrap();
         file_menu.append(&load_config).unwrap();
 
         let trans_menu = Submenu::new("Transcriptions", true);
-        let load_transcript = MenuItem::new("Load External Transcriptions", true, None);
+        let load_transcript = MenuItem::new("Import External Transcriptions", true, None);
         let save_transcript = MenuItem::new("Export Saved Transcriptions", true, None);
         trans_menu.append(&load_transcript).unwrap();
         trans_menu.append(&save_transcript).unwrap();
@@ -736,15 +723,15 @@ impl CtxMenuIds {
         menu.append(&app_name).unwrap();
 
         let file_menu = Submenu::new("File", true);
-        let open_notes = MenuItem::new("Open", true, accel!(SUPER, KeyO));
+        let open_notes = MenuItem::new("Load Notebook(s)", true, accel!(SUPER, KeyO));
         let export_notes = MenuItem::new("Export", true, accel!(SUPER, KeyS));
-        let load_config = MenuItem::new("Load Settings", true, None);
+        let load_config = MenuItem::new("Load MyScript Keys", true, None);
         file_menu.append(&open_notes).unwrap();
         file_menu.append(&export_notes).unwrap();
         file_menu.append(&load_config).unwrap();
 
         let trans_menu = Submenu::new("Transcriptions", true);
-        let load_transcript = MenuItem::new("Load External Transcriptions", true, None);
+        let load_transcript = MenuItem::new("Import External Transcriptions", true, None);
         let save_transcript = MenuItem::new("Export Saved Transcriptions", true, None);
         trans_menu.append(&load_transcript).unwrap();
         trans_menu.append(&save_transcript).unwrap();
@@ -752,18 +739,8 @@ impl CtxMenuIds {
         menu.append(&file_menu).unwrap();
         menu.append(&trans_menu).unwrap();
 
-
-        #[cfg(target_os = "macos")]
-        {
-        
-        #[cfg(target_os = "macos")]
-        {
-            menu.init_for_nsapp();
-            menu.init_for_nsapp();
-        }
         menu.init_for_nsapp();
-        }
-
+        
         Self {
             open_notes,
             export_notes,
