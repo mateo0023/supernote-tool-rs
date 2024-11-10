@@ -355,7 +355,13 @@ impl TitleCollection {
             for t in titles.iter() {
                 while (prev_level as u8) + 1 < t.title_level as u8 {
                     prev_level = prev_level.add();
-                    let title = Title::new_ghost(prev_level, t);
+                    let mut title = Title::new_ghost(prev_level, t);
+                    // Update transcription if already done so.
+                    if let Some(note_cache) = cache.as_ref() {
+                        if let Some(tr) = note_cache.get(&title.hash) {
+                            title.name = tr.title.clone();
+                        }
+                    }
                     ghost_titles.push(title);
                 }
                 prev_level = t.title_level;

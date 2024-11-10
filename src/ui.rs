@@ -167,11 +167,11 @@ impl MyApp {
     /// into a PDF (or PDFs).
     fn package_and_export(&mut self) {
         self.update_cache_from_editor();
-        self.scheduler.save_cache(self.directories.data_dir().with_file_name(TRANSCRIPT_FILE_N));
+        self.scheduler.save_cache(self.directories.data_dir().join(TRANSCRIPT_FILE_N));
 
         self.update_note_from_holder();
 
-        if self.notebooks.len() < 2 || !self.combine_pdfs {
+        if self.notebooks.len() > 1 && !self.combine_pdfs {
             if let Some(path) = FileDialog::new().add_filter("PDF", &["pdf"]).pick_folder() {
                 let mut notes = vec![];
                 let mut paths = vec![];
@@ -188,13 +188,13 @@ impl MyApp {
             }
         } else if let Some(path) = FileDialog::new()
             .add_filter("PDF", &["pdf"])
-            .set_file_name(format!("{}.pdf", self.out_name))
+            .set_file_name(format!("{}.pdf", if self.notebooks.len() == 1 {&self.notebooks[0].0.note_name} else {&self.out_name}))
             .save_file()
         {
             self.note_exp_status = Some((0., "Loading Notebooks".to_string()));
             self.scheduler.save_notebooks(
                 self.notebooks.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>(),
-                ExportSettings::Merged(path.join(format!("{}.pdf", self.out_name)))
+                ExportSettings::Merged(path)
             );
         }
     }
