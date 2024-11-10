@@ -18,7 +18,6 @@ const TRANSCRIPT_FILE_N: &str = "transcript.json";
 const CONFIG_FILE_N: &str = "config.json";
 
 pub struct MyApp {
-    #[cfg(target_os = "macos")]
     context_menu: CtxMenuIds,
     server_config: ServerConfig,
     scheduler: Scheduler,
@@ -66,11 +65,16 @@ pub struct TitleEditor {
 }
 
 struct CtxMenuIds {
-    open_notes: MenuItem,
-    export_notes: MenuItem,
-    load_config: MenuItem,
-    load_transcript: MenuItem,
-    save_transcript: MenuItem,
+    pub open_notes: MenuItem,
+    pub export_notes: MenuItem,
+    pub load_config: MenuItem,
+    pub load_transcript: MenuItem,
+    pub save_transcript: MenuItem,
+    _menu: Menu,
+    #[cfg(target_os = "macos")]
+    _empty: Submenu,
+    _file: Submenu,
+    _transcripts: Submenu,
 }
 
 /// Loads the as a texture with the given context and returns the [TextureHandle](egui::TextureHandle)
@@ -111,12 +115,13 @@ impl MyApp {
         }.unwrap_or_default();
 
         #[cfg(target_os = "macos")]
-        let context_menu = CtxMenuIds::new();
+        let context_menu = CtxMenuIds::new(None);
+        #[cfg(target_os = "windows")]
+        let context_menu = CtxMenuIds::new(w_handle.unwrap());
 
         MyApp {
             scheduler,
             directories,
-            #[cfg(target_os = "macos")]
             context_menu,
             server_config,
             notebooks: vec![],
@@ -289,7 +294,6 @@ impl MyApp {
 
 impl eframe::App for MyApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        #[cfg(target_os = "macos")]
         if let Ok(event) = muda::MenuEvent::receiver().try_recv() {
             match event.id {
                 id if id == self.context_menu.open_notes.id() => {
@@ -349,27 +353,6 @@ impl eframe::App for MyApp {
                 if ui.button("Export to PDF").clicked() {
                     self.package_and_export();
                 }
-
-                #[cfg(target_os = "windows")]
-                ui.vertical(|ui| {
-                    if ui.button("Import Title Transcriptions").clicked() {
-                        if let Some(path) = FileDialog::new().add_filter("Transcripts", &["json"]).pick_file() {
-                            self.load_cache(path);
-                        }
-                    }
-                    if ui.button("Load MyScript API Keys").clicked() {
-                        if let Some(p) = FileDialog::new().add_filter("Config", &["json"]).pick_file() {
-                            match AppConfig::from_path(p) {
-                                Ok(conf) => {
-                                    self.load_config(conf);
-                                    self.save_settings();
-                                },
-                                Err(e) => self.add_err(e),
-                            }
-                        }
-                    }
-                })
-
             });
 
             self.check_messages(ui, ctx);
@@ -677,13 +660,27 @@ impl TitleEditor {
 }
 
 impl CtxMenuIds {
-    #[cfg(target_os = "windows")]
     pub fn new(w_handle: WindowHandle<'_>) -> Self {
         let menu = Menu::new();
+        #[cfg(target_os = "macos")]
+        let app_name = Submenu::new("Supernote Tool", true);
+        #[cfg(target_os = "macos")]
+        menu.append(&app_name).unwrap();
+
 
         let file_menu = Submenu::new("File", true);
-        let open_notes = MenuItem::new("Load Notebook(s)", true, accel!(CONTROL, KeyO));
-        let export_notes = MenuItem::new("Export", true, accel!(CONTROL, KeyS));
+        
+        // MacOS Accelerators (shortcuts)
+        #[cfg(target_os = "macos")]
+        let open_notes = MenuItem::new("Load Notebook(s)", true, accel!(SUPER, KeyO));
+        #[cfg(target_os = "macos")]
+        let export_notes = MenuItem::new("Export", true, accel!(SUPER, KeyS));
+        // Windows Accelerators (shortcuts)
+        #[cfg(target_os = "windows")]
+        let open_notes = MenuItem::new("Load Notebook(s)", true, None);
+        #[cfg(target_os = "windows")]
+        let export_notes = MenuItem::new("Export", true, None);
+
         let load_config = MenuItem::new("Load MyScript Keys", true, None);
         file_menu.append(&open_notes).unwrap();
         file_menu.append(&export_notes).unwrap();
@@ -698,6 +695,9 @@ impl CtxMenuIds {
         menu.append(&file_menu).unwrap();
         menu.append(&trans_menu).unwrap();
 
+        #[cfg(target_os = "macos")]
+        menu.init_for_nsapp();
+        #[cfg(target_os = "windows")]
         if let raw_window_handle::RawWindowHandle::Win32(handle) = w_handle.as_raw() {
             unsafe {
                 menu.init_for_hwnd(handle.hwnd.get()).unwrap();
@@ -705,41 +705,6 @@ impl CtxMenuIds {
         } else {
             panic!("Unkown Window Handle {:?}", w_handle)
         }
-
-
-        Self {
-            open_notes,
-            export_notes,
-            load_config,
-            load_transcript,
-            save_transcript,
-        }
-    }
-    
-    #[cfg(target_os = "macos")]
-    pub fn new() -> Self {
-        let menu = Menu::new();
-        let app_name = Submenu::new("Supernote Tool", true);
-        menu.append(&app_name).unwrap();
-
-        let file_menu = Submenu::new("File", true);
-        let open_notes = MenuItem::new("Load Notebook(s)", true, accel!(SUPER, KeyO));
-        let export_notes = MenuItem::new("Export", true, accel!(SUPER, KeyS));
-        let load_config = MenuItem::new("Load MyScript Keys", true, None);
-        file_menu.append(&open_notes).unwrap();
-        file_menu.append(&export_notes).unwrap();
-        file_menu.append(&load_config).unwrap();
-
-        let trans_menu = Submenu::new("Transcriptions", true);
-        let load_transcript = MenuItem::new("Import External Transcriptions", true, None);
-        let save_transcript = MenuItem::new("Export Saved Transcriptions", true, None);
-        trans_menu.append(&load_transcript).unwrap();
-        trans_menu.append(&save_transcript).unwrap();
-
-        menu.append(&file_menu).unwrap();
-        menu.append(&trans_menu).unwrap();
-
-        menu.init_for_nsapp();
         
         Self {
             open_notes,
@@ -747,6 +712,11 @@ impl CtxMenuIds {
             load_config,
             load_transcript,
             save_transcript,
+            _file: file_menu,
+            #[cfg(target_os = "macos")]
+            _empty: app_name,
+            _transcripts: trans_menu,
+            _menu: menu,
         }
     }
 }

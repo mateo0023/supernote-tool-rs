@@ -39,6 +39,8 @@ pub fn start_app() {
         "Supernote Tool",
         eframe::NativeOptions {
             viewport: egui::ViewportBuilder { icon: Some(ui::icon::get_icon().into()), ..Default::default()  },
+            follow_system_theme: false,
+            default_theme: eframe::Theme::Light,
             ..Default::default()
         },
         Box::new(|ctx| {
