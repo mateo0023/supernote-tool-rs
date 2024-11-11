@@ -45,7 +45,7 @@ pub fn start_app() {
         },
         Box::new(|ctx| {
             use raw_window_handle::HasWindowHandle;
-            Ok(Box::new(ui::MyApp::new(ctx.window_handle().ok())))
+            Ok(Box::new(ui::MyApp::new(ctx.window_handle().unwrap())))
         })
     );
 }

@@ -99,7 +99,7 @@ pub fn get_project_dir() -> ProjectDirs {
 
 impl MyApp {
     /// Loads settings and data from the directories (following OS Folder structure).
-    pub fn new(w_handle: Option<WindowHandle<'_>>) -> Self {
+    pub fn new(w_handle: WindowHandle<'_>) -> Self {
         let directories = get_project_dir();
         std::fs::create_dir_all(directories.data_dir()).unwrap();
         std::fs::create_dir_all(directories.config_dir()).unwrap();
@@ -114,10 +114,7 @@ impl MyApp {
             Err(_) => None,
         }.unwrap_or_default();
 
-        #[cfg(target_os = "macos")]
-        let context_menu = CtxMenuIds::new(None);
-        #[cfg(target_os = "windows")]
-        let context_menu = CtxMenuIds::new(w_handle.unwrap());
+        let context_menu = CtxMenuIds::new(w_handle);
 
         MyApp {
             scheduler,
@@ -664,6 +661,7 @@ impl TitleEditor {
 }
 
 impl CtxMenuIds {
+    #[allow(unused_variables)]
     pub fn new(w_handle: WindowHandle<'_>) -> Self {
         let menu = Menu::new();
         #[cfg(target_os = "macos")]
