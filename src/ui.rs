@@ -171,30 +171,30 @@ impl MyApp {
 
         self.update_note_from_holder();
 
-        if self.notebooks.len() > 1 && !self.combine_pdfs {
-            if let Some(path) = FileDialog::new().add_filter("PDF", &["pdf"]).pick_folder() {
-                let mut notes = vec![];
-                let mut paths = vec![];
-                for (note, _) in &self.notebooks {
-                    let new_path = path.join(format!("{}.pdf", note.note_name));
-                    notes.push(note.clone());
-                    paths.push((note.note_id, new_path));
-                }
+        if self.notebooks.len() < 2 || self.combine_pdfs {
+            if let Some(path) = FileDialog::new()
+                .add_filter("PDF", &["pdf"])
+                .set_file_name(format!("{}.pdf", if self.notebooks.len() == 1 {&self.notebooks[0].0.note_name} else {&self.out_name}))
+                .save_file()
+            {
                 self.note_exp_status = Some((0., "Loading Notebooks".to_string()));
                 self.scheduler.save_notebooks(
-                    notes,
-                    ExportSettings::Seprate(paths)
+                    self.notebooks.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>(),
+                    ExportSettings::Merged(path)
                 );
             }
-        } else if let Some(path) = FileDialog::new()
-            .add_filter("PDF", &["pdf"])
-            .set_file_name(format!("{}.pdf", if self.notebooks.len() == 1 {&self.notebooks[0].0.note_name} else {&self.out_name}))
-            .save_file()
-        {
+        } else if let Some(path) = FileDialog::new().add_filter("PDF", &["pdf"]).pick_folder() {
+            let mut notes = vec![];
+            let mut paths = vec![];
+            for (note, _) in &self.notebooks {
+                let new_path = path.join(format!("{}.pdf", note.note_name));
+                notes.push(note.clone());
+                paths.push((note.note_id, new_path));
+            }
             self.note_exp_status = Some((0., "Loading Notebooks".to_string()));
             self.scheduler.save_notebooks(
-                self.notebooks.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>(),
-                ExportSettings::Merged(path)
+                notes,
+                ExportSettings::Seprate(paths)
             );
         }
     }
@@ -237,6 +237,10 @@ impl MyApp {
     /// * [`note_exp_status`](MyApp::note_exp_status)
     /// * [`out_err`](MyApp::out_err)
     fn check_messages(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        const CREATING_P: f32 = 0.3;
+        const COMPRESS_P: f32 = 0.6;
+        const SAVING_P: f32 = 1.0 - (CREATING_P + COMPRESS_P);
+
         if let Some(msg) = self.scheduler.check_update() {
             use messages::SchedulerResponse::*;
             match msg {
@@ -281,9 +285,9 @@ impl MyApp {
                 },
                 ExportMessage(exp_msg) => match exp_msg {
                     messages::ExpMsg::Error(err) => {self.add_err(err);},
-                    messages::ExpMsg::CreatingDocs(p) => self.note_exp_status = Some((p * 0.3, "Creating PDF(s)".to_string())),
-                    messages::ExpMsg::CompressingDocs(p) => self.note_exp_status = Some((0.3 + p * 0.5, "Compressing PDF(s)".to_string())),
-                    messages::ExpMsg::SavingDocs(p) => self.note_exp_status = Some((0.8 + p * 0.2, "Saving PDF(s)".to_string())),
+                    messages::ExpMsg::CreatingDocs(p) => self.note_exp_status = Some((p * CREATING_P, "Creating PDF(s)".to_string())),
+                    messages::ExpMsg::CompressingDocs(p) => self.note_exp_status = Some((CREATING_P + p * COMPRESS_P, "Compressing PDF(s)".to_string())),
+                    messages::ExpMsg::SavingDocs(p) => self.note_exp_status = Some((1.0 - SAVING_P + p * SAVING_P, "Saving PDF(s)".to_string())),
                     messages::ExpMsg::Complete => self.note_exp_status = None,
                     
                 },
