@@ -51,17 +51,33 @@ struct TitleHolder {
 }
 
 pub struct TitleEditor {
+    note_id: u64,
     title: String,
     persis_id: egui::Id,
     img_texture: Option<egui::TextureHandle>,
     level: TitleLevel,
     children: Option<Vec<TitleEditor>>,
+    /// The indexes to go from [`TitleHolder`] to `Self`.
+    /// 
+    /// So, `vec![0, ..., 2]`. Would be:
+    /// ```no_run
+    /// let mut path = vec![0, ..., 2].into_iter();
+    /// let first_idx = path.next().unwrap();
+    /// let mut editor = &TitleHolder.titles[first_idx]
+    /// for idx in path {
+    ///     editor = &editor.children[idx];
+    /// }
+    /// editor
+    /// ```
+    path: Vec<usize>,
     /// The hash value of the content (encoded).
     hash: u64,
     /// The page_id on the notebook.
     page_id: u64,
     /// Whether it was edited by the user, ever (it was in Cache).
     was_edited: bool,
+    /// Wether to export the title.
+    export: bool,
 }
 
 struct CtxMenuIds {
@@ -431,9 +447,21 @@ impl eframe::App for MyApp {
                         });
                     }
                 }
+
+                // Update paths export field downwards.
+                if let Some((_, _, Some((note_id, path)))) = title_bx.iter().find(|(_, _, path)| path.is_some()) {
+                    for (note, holder) in self.notebooks.iter_mut() {
+                        if note.note_id == *note_id {
+                            let mut path = path.iter();
+                            if let Some(&idx) = path.next() {
+                                holder.titles[idx].set_path_on(&mut path);
+                            }
+                        }
+                    }
+                }
     
                 // Showing the image.
-                if let Some((txt_box, Some(texture))) = title_bx.iter().find(|(it, _)| it.has_focus()).or(title_bx.iter().find(|(i, _)| i.hovered())) {
+                if let Some((txt_box, Some(texture), _)) = title_bx.iter().find(|(it, _, _)| it.has_focus()).or(title_bx.iter().find(|(i, _, _)| i.hovered())) {
                     let width = ctx.input(|i: &egui::InputState| i.screen_rect()).width() - txt_box.interact_rect.right();
                     let height = width / texture.aspect_ratio();
     
@@ -475,10 +503,10 @@ impl TitleHolder {
     fn create_editors(&mut self, notebook: &TitleCollection, ui: &egui::Ui, ctx: &egui::Context) {
         notebook.get_sorted_titles().into_iter()
             .filter_map(|title| {
-                TitleEditor::new(title, title.page_id, ui, ctx)
-            }.map(|te| (te, title.title_level)).ok()
+                TitleEditor::new(notebook.note_id, title, ui, ctx)
+            }.ok()
             )
-            .for_each(|(title, lvl)| self.add_title(title, lvl));
+            .for_each(|title| self.add_title(title));
     }
 
     pub fn get_cache(&self) -> (u64, NotebookCache) {
@@ -486,8 +514,11 @@ impl TitleHolder {
         (self.file_id, list)
     }
 
-    fn add_title(&mut self, title: TitleEditor, lvl: TitleLevel) {
-        if let TitleLevel::BlackBack = lvl {
+    /// Adds the [TitleEditor] to the titles, updating the [path](TitleEditor::path)s as needed.
+    fn add_title(&mut self, mut title: TitleEditor) {
+        if let TitleLevel::BlackBack = title.level {
+            println!("Updating path to [{}]", self.titles.len());
+            title.path = vec![self.titles.len()];
             self.titles.push(title);
         } else {
             self.titles.last_mut().expect("Should already contain a home-title")
@@ -502,7 +533,7 @@ impl TitleHolder {
 }
 
 impl TitleEditor {
-    pub fn new(title: &Title, page_id: u64, ui: &egui::Ui, ctx: &egui::Context) -> Result<Self, DecoderError> {
+    pub fn new(note_id: u64, title: &Title, ui: &egui::Ui, ctx: &egui::Context) -> Result<Self, DecoderError> {
         let bitmap = title.render_bitmap()?;
         let width = (title.coords[2] - title.coords[0]) as usize;
         let height = (title.coords[3] - title.coords[1]) as usize;
@@ -517,14 +548,17 @@ impl TitleEditor {
             Transciption::None => (String::new(), false),
         };
         Ok(TitleEditor {
+            note_id,
             title: title_transcript,
             persis_id,
             img_texture,
             level: title.title_level,
             children: None,
             hash: title.hash,
-            page_id,
+            page_id: title.page_id,
             was_edited,
+            path: vec![],
+            export: true,
         })
     }
 
@@ -544,14 +578,22 @@ impl TitleEditor {
         (self.hash, title)
     }
 
-    pub fn add_child(&mut self, title: TitleEditor) {
+    /// Adds the child to [Self::children] (or inserts into the option).
+    /// Updates path when needed.
+    pub fn add_child(&mut self, mut title: TitleEditor) {
+        println!("Adding {}\tto {}", title.level, self.level);
         if self.level.add() == title.level {
             // Reached the correct level
             let ch = self.children.get_or_insert(vec![]);
+            let mut new_path = self.path.clone();
+            new_path.push(ch.len());
+            println!("New path {:?}", new_path);
+            title.path = new_path;
             ch.push(title);
         } else {
             // Need to go one level down
             let ch = self.children.as_mut().unwrap();
+            println!("Going deeper");
             ch.last_mut().unwrap().add_child(title);
         }
     }
@@ -584,6 +626,25 @@ impl TitleEditor {
         }
     }
 
+    /// Will recursively set all children's [export](Self::export) to 
+    /// [`Self::export`].
+    fn progress_down(&mut self) {
+        if let Some(children) = self.children.as_mut() {
+            for ch in children {
+                ch.export = self.export;
+                ch.progress_down();
+            }
+        }
+    }
+
+    /// Sets [`Self::export`] to `true` and does so for the rest of the [path](TitleEditor::path).
+    fn set_path_on(&mut self, path: &mut dyn Iterator<Item = &usize>) {
+        self.export = true;
+        if let (Some(&idx), Some(children)) = (path.next(), self.children.as_mut()) {
+            children[idx].set_path_on(path);
+        }
+    }
+
     /// Converts itself to a [TitleCache] to be cached.
     /// **IGNORING CHILDREN**
     fn as_single_cache(&self) -> Option<TitleCache> {
@@ -606,9 +667,9 @@ impl TitleEditor {
     /// Renders all the titles as [CollapsingHeader](egui::CollapsingHeader)
     /// 
     /// If no [children](Self::children), simply render a [TextEdit](egui::TextEdit)
-    pub fn show(&mut self, ui: &mut egui::Ui, show_empty: bool, focus: &mut Option<egui::Id>) -> Vec<(egui::Response, Option<egui::TextureHandle>)> {
-        match &mut self.children {
-            Some(children) => {
+    pub fn show(&mut self, ui: &mut egui::Ui, show_empty: bool, focus: &mut Option<egui::Id>) -> Vec<(egui::Response, Option<egui::TextureHandle>, Option<(u64, Vec<usize>)>)> {
+        match self.children.is_some() {
+            true => {
                 let mut text_boxes = vec![];
 
                 if show_empty {
@@ -618,35 +679,53 @@ impl TitleEditor {
                         if txt_edit.has_focus() {
                             *focus = Some(self.persis_id);
                         }
-                        text_boxes.push((txt_edit, self.img_texture.clone()));
+                        text_boxes.push((txt_edit, self.img_texture.clone(), None));
                     }
-                    text_boxes.extend(children.iter_mut().flat_map(|t| t.show(ui, show_empty, focus)));
+                    text_boxes.extend(self.children.as_mut().unwrap().iter_mut().flat_map(|t| t.show(ui, show_empty, focus)));
                 } else {
                     egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), self.persis_id, false)
                         .show_header(ui, |ui| {
+                            let path = if ui.checkbox(&mut self.export, "").clicked() {
+                                self.progress_down();
+                                if self.export {
+                                    Some((self.note_id, self.path.clone()))
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            };
                             let txt_edit = Self::text_edit(&mut self.title, ui);
                             self.was_edited |= txt_edit.changed();
                             if txt_edit.has_focus() {
                                 *focus = Some(self.persis_id);
                             }
-                            text_boxes.push((txt_edit, self.img_texture.clone()));
+                            text_boxes.push((txt_edit, self.img_texture.clone(), (path)));
                         })
                         .body(|ui| {
-                            text_boxes.extend(children.iter_mut().flat_map(|t| t.show(ui, show_empty, focus)));
+                            text_boxes.extend(self.children.as_mut().unwrap().iter_mut().flat_map(|t| t.show(ui, show_empty, focus)));
                         });
                 }
 
                 text_boxes
             },
-            None => {
+            false => {
                 // Simply add text box
                 if !show_empty || (*focus == Some(self.persis_id) || self.title.is_empty()) {
-                    let txt_edit = Self::text_edit(&mut self.title, ui);
-                    self.was_edited |= txt_edit.changed();
-                    if txt_edit.has_focus() {
-                        *focus = Some(self.persis_id);
-                    }
-                    vec![(txt_edit, self.img_texture.clone())]
+                    ui.horizontal(|ui| {
+                        let path = if !show_empty && ui.checkbox(&mut self.export, "").clicked()
+                        && self.export {
+                            Some((self.note_id, self.path.clone()))
+                        } else {
+                            None
+                        };
+                        let txt_edit = Self::text_edit(&mut self.title, ui);
+                        self.was_edited |= txt_edit.changed();
+                        if txt_edit.has_focus() {
+                            *focus = Some(self.persis_id);
+                        }
+                        vec![(txt_edit, self.img_texture.clone(), path)]
+                    }).inner
                 } else {
                     vec![]
                 }
