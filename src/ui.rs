@@ -17,6 +17,8 @@ mod ui_settings;
 const TRANSCRIPT_FILE_N: &str = "transcript.json";
 const CONFIG_FILE_N: &str = "config.json";
 
+pub const FONT_SIZE: f32 = 11.0;
+
 pub struct MyApp {
     context_menu: CtxMenuIds,
     server_config: ServerConfig,
@@ -683,7 +685,7 @@ impl TitleEditor {
                     }
                     text_boxes.extend(self.children.as_mut().unwrap().iter_mut().flat_map(|t| t.show(ui, show_empty, focus)));
                 } else {
-                    egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), self.persis_id, false)
+                    egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), self.persis_id, true)
                         .show_header(ui, |ui| {
                             let path = if ui.checkbox(&mut self.export, "").clicked() {
                                 self.progress_down();
@@ -713,6 +715,9 @@ impl TitleEditor {
                 // Simply add text box
                 if !show_empty || (*focus == Some(self.persis_id) || self.title.is_empty()) {
                     ui.horizontal(|ui| {
+                        if !show_empty {
+                            ui.allocate_space(egui::vec2(FONT_SIZE, FONT_SIZE));
+                        }
                         let path = if !show_empty && ui.checkbox(&mut self.export, "").clicked()
                         && self.export {
                             Some((self.note_id, self.path.clone()))
