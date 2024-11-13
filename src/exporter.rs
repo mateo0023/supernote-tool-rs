@@ -10,6 +10,8 @@ const A4_HEIGHT: u32 = crate::common::f_fmt::PAGE_HEIGHT as u32;
 
 mod potrace;
 
+mod page_ranges;
+
 pub use potrace::Word as PotraceWord;
 pub use potrace::PotraceError;
 

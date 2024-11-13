@@ -6,6 +6,7 @@ use ui_settings::AppConfig;
 use muda::{Menu, MenuItem, Submenu};
 use raw_window_handle::WindowHandle;
 
+use crate::common::f_fmt;
 use crate::data_structures::{ServerConfig, Title, TitleCollection, TitleLevel, Transciption};
 use crate::error::*;
 use crate::data_structures::cache::*;
@@ -16,6 +17,7 @@ mod ui_settings;
 
 const TRANSCRIPT_FILE_N: &str = "transcript.json";
 const CONFIG_FILE_N: &str = "config.json";
+const Y_INCLUDE: f32 = 0.1;
 
 pub const FONT_SIZE: f32 = 11.0;
 
@@ -76,10 +78,14 @@ pub struct TitleEditor {
     hash: u64,
     /// The page_id on the notebook.
     page_id: u64,
+    page_idx: usize,
     /// Whether it was edited by the user, ever (it was in Cache).
     was_edited: bool,
     /// Wether to export the title.
     export: bool,
+    /// The vertical position of the title as percentage of the 
+    /// entire page `[0, 1]`
+    y_pos: f32,
 }
 
 struct CtxMenuIds {
@@ -516,10 +522,17 @@ impl TitleHolder {
         (self.file_id, list)
     }
 
+    pub fn get_page_ranges(&self) -> Vec<usize> {
+        let mut pages_of_interest = vec![];
+        for title in self.titles.iter() {
+            pages_of_interest.extend(title.get_relevant_points())
+        }
+        todo!()
+    }
+
     /// Adds the [TitleEditor] to the titles, updating the [path](TitleEditor::path)s as needed.
     fn add_title(&mut self, mut title: TitleEditor) {
         if let TitleLevel::BlackBack = title.level {
-            println!("Updating path to [{}]", self.titles.len());
             title.path = vec![self.titles.len()];
             self.titles.push(title);
         } else {
@@ -558,9 +571,11 @@ impl TitleEditor {
             children: None,
             hash: title.hash,
             page_id: title.page_id,
+            page_idx: title.page_index,
             was_edited,
             path: vec![],
             export: true,
+            y_pos: title.coords[1] as f32 / f_fmt::PAGE_HEIGHT as f32,
         })
     }
 
@@ -583,19 +598,16 @@ impl TitleEditor {
     /// Adds the child to [Self::children] (or inserts into the option).
     /// Updates path when needed.
     pub fn add_child(&mut self, mut title: TitleEditor) {
-        println!("Adding {}\tto {}", title.level, self.level);
         if self.level.add() == title.level {
             // Reached the correct level
             let ch = self.children.get_or_insert(vec![]);
             let mut new_path = self.path.clone();
             new_path.push(ch.len());
-            println!("New path {:?}", new_path);
             title.path = new_path;
             ch.push(title);
         } else {
             // Need to go one level down
             let ch = self.children.as_mut().unwrap();
-            println!("Going deeper");
             ch.last_mut().unwrap().add_child(title);
         }
     }
@@ -625,6 +637,25 @@ impl TitleEditor {
             ch.iter().for_each(|title| {
                 title.update_notebook(notebook)
             });
+        }
+    }
+
+    /// Returns the pages of interest.
+    /// 
+    /// 0. Page index where a title is located.
+    /// 1. Wether the title should be included as export.
+    /// 2. Wether the page should be inclusive of a previous title range.
+    fn get_relevant_points(&self) -> Vec<(usize, bool, bool)> {
+        match (self.children.as_ref(), self.export) {
+            (None, _) |
+            (Some(_), false) => vec![(self.page_idx, self.export, self.y_pos >= Y_INCLUDE)],
+            (Some(children), true) => {
+                let mut points = vec![];
+                for ch in children {
+                    points.extend(ch.get_relevant_points());
+                }
+                points
+            },
         }
     }
 
