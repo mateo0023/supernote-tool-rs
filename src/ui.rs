@@ -7,25 +7,29 @@ use muda::{Menu, MenuItem, Submenu};
 use raw_window_handle::WindowHandle;
 
 use crate::common::f_fmt;
-use crate::data_structures::{ServerConfig, Title, TitleCollection, TitleLevel, Transciption};
+use crate::data_structures::{ServerConfig, Title, TitleCollection, TitleLevel, Transcription};
 use crate::error::*;
 use crate::data_structures::cache::*;
 use crate::scheduler::*;
+use crate::exporter::{PageMap, RangeBuilder, MultiNotePageMap, TitleToC};
 
 pub mod icon;
 mod ui_settings;
 
 const TRANSCRIPT_FILE_N: &str = "transcript.json";
 const CONFIG_FILE_N: &str = "config.json";
-const Y_INCLUDE: f32 = 0.1;
-
 pub const FONT_SIZE: f32 = 11.0;
+/// The point where to decide if an export page range
+/// should be inclusive or not. If the page is greater than
+/// [TITLE_POS_CUT] in the vertical,
+/// it should include the page in the exported page.
+const TITLE_POS_CUT: f32 = 0.1;
 
 pub struct MyApp {
     context_menu: CtxMenuIds,
     server_config: ServerConfig,
     scheduler: Scheduler,
-    notebooks: Vec<(TitleCollection, TitleHolder)>,
+    notebooks: Vec<TitleHolder>,
     directories: ProjectDirs,
     /// Any error messages to display.
     out_err: Option<Vec<String>>,
@@ -46,34 +50,24 @@ pub struct MyApp {
     note_exp_status: Option<(f32, String)>,
 }
 
-#[derive(Default)]
 struct TitleHolder {
     file_id: u64,
     file_name: String,
     /// List of titles in the file.
     titles: Vec<TitleEditor>,
+    /// Whether to include the notebook in the export.
+    export: bool,
+    /// The total page count of the notebook.
+    page_count: usize,
 }
 
+#[derive(Clone)]
 pub struct TitleEditor {
-    note_id: u64,
     title: String,
     persis_id: egui::Id,
     img_texture: Option<egui::TextureHandle>,
     level: TitleLevel,
     children: Option<Vec<TitleEditor>>,
-    /// The indexes to go from [`TitleHolder`] to `Self`.
-    /// 
-    /// So, `vec![0, ..., 2]`. Would be:
-    /// ```no_run
-    /// let mut path = vec![0, ..., 2].into_iter();
-    /// let first_idx = path.next().unwrap();
-    /// let mut editor = &TitleHolder.titles[first_idx]
-    /// for idx in path {
-    ///     editor = &editor.children[idx];
-    /// }
-    /// editor
-    /// ```
-    path: Vec<usize>,
     /// The hash value of the content (encoded).
     hash: u64,
     /// The page_id on the notebook.
@@ -180,8 +174,8 @@ impl MyApp {
     fn add_notebook(&mut self, notebook: TitleCollection, ui: &egui::Ui, ctx: &egui::Context) {
         let new_titles = TitleHolder::from_notebook(&notebook, ui, ctx);
         
-        self.notebooks.push((notebook, new_titles));
-        self.notebooks.sort_by_cached_key(|n| n.0.note_name.clone());
+        self.notebooks.push(new_titles);
+        self.notebooks.sort_by_cached_key(|n| n.file_name.clone());
     }
 
     /// Will update the titles and render the [notebook(s)](Self::notebooks)
@@ -190,34 +184,70 @@ impl MyApp {
         self.update_cache_from_editor();
         self.scheduler.save_cache(self.directories.data_dir().join(TRANSCRIPT_FILE_N));
 
-        self.update_note_from_holder();
+        let (titles, maps): (Vec<_>, Vec<_>) = self.notebooks.iter().map(|h| h.get_collection_and_ranges()).unzip();
+        let page_map = MultiNotePageMap::from_vec(maps);
+        match (self.notebooks.len().cmp(&1), self.combine_pdfs) {
 
-        if self.notebooks.len() < 2 || self.combine_pdfs {
-            if let Some(path) = FileDialog::new()
+            // Export MERGED Files. Need to add File Titles
+            (std::cmp::Ordering::Greater, true) => if let Some(path) = FileDialog::new()
                 .add_filter("PDF", &["pdf"])
-                .set_file_name(format!("{}.pdf", if self.notebooks.len() == 1 {&self.notebooks[0].0.note_name} else {&self.out_name}))
+                .set_file_name(format!("{}.pdf", self.out_name))
                 .save_file()
             {
+                let note_ids = self.notebooks.iter().map(|h| h.file_id).collect();
+                let mut titles = titles;
+                for (file, holder) in titles.iter_mut().zip(self.notebooks.iter()) {
+                    if let Some(t) = file.first() {
+                        let file_toc = TitleToC {
+                            level: TitleLevel::FileLevel as i8,
+                            name: holder.file_name.clone(),
+                            page_index: t.page_index,
+                        };
+                        file.insert(0, file_toc);
+                    }
+                }
                 self.note_exp_status = Some((0., "Loading Notebooks".to_string()));
-                self.scheduler.save_notebooks(
-                    self.notebooks.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>(),
-                    ExportSettings::Merged(path)
+                self.scheduler.export_notebooks(
+                    titles,
+                    ExportSettings { out_paths: MergeOrSep::Merged(path), note_ids },
+                    page_map
+                );
+            },
+
+            // Export Separate.
+            (std::cmp::Ordering::Greater, false) => if let Some(path) = FileDialog::new().pick_folder() {
+                let mut paths = vec![];
+                let note_ids = self.notebooks.iter().map(|h| h.file_id).collect();
+                for holder in &self.notebooks {
+                    let new_path = path.join(format!("{}.pdf", holder.file_name));
+                    paths.push((holder.file_id, new_path));
+                }
+                self.note_exp_status = Some((0., "Loading Notebooks".to_string()));
+                self.scheduler.export_notebooks(
+                    titles,
+                    ExportSettings { out_paths: MergeOrSep::Seprate(paths), note_ids },
+                    page_map
+                );
+            },
+            
+            // Export Single File.
+            (std::cmp::Ordering::Equal, _) => if let Some(path) = FileDialog::new()
+                .add_filter("PDF", &["pdf"])
+                .set_file_name(format!("{}.pdf", self.notebooks[0].file_name))
+                .save_file()
+            {
+                let note_ids = self.notebooks.iter().map(|h| h.file_id).collect();
+                self.note_exp_status = Some((0., "Loading Notebooks".to_string()));
+                self.scheduler.export_notebooks(
+                    titles,
+                    ExportSettings { out_paths: MergeOrSep::Merged(path), note_ids },
+                    page_map
                 );
             }
-        } else if let Some(path) = FileDialog::new().add_filter("PDF", &["pdf"]).pick_folder() {
-            let mut notes = vec![];
-            let mut paths = vec![];
-            for (note, _) in &self.notebooks {
-                let new_path = path.join(format!("{}.pdf", note.note_name));
-                notes.push(note.clone());
-                paths.push((note.note_id, new_path));
-            }
-            self.note_exp_status = Some((0., "Loading Notebooks".to_string()));
-            self.scheduler.save_notebooks(
-                notes,
-                ExportSettings::Seprate(paths)
-            );
-        }
+
+            // Do nothing, no files
+            (std::cmp::Ordering::Less, _) => ()
+        };
     }
 
     fn save_settings(&mut self) {
@@ -233,20 +263,10 @@ impl MyApp {
         }
     }
 
-    /// Will update the [notebooks](TitleCollection)
-    /// based on the content in the [TitleHolder].
-    fn update_note_from_holder(&mut self) {
-        for (notebook, holder) in self.notebooks.iter_mut() {
-            for title in holder.titles.iter() {
-                title.update_notebook(notebook);
-            }
-        }
-    }
-
     /// Updates app_cache from the [TitleEditor]s
     /// in [Self::notebooks].
     fn update_cache_from_editor(&mut self) {
-        for (_, holder) in &self.notebooks {
+        for holder in &self.notebooks {
             let (k, v) = holder.get_cache();
             self.scheduler.update_cache(k, v);
         }
@@ -438,9 +458,12 @@ impl eframe::App for MyApp {
             egui::ScrollArea::vertical().max_width(f32::INFINITY).show(ui, |ui| {
                 // TitleHolder render
                 let mut title_bx = vec![];
-                for (_, holder) in self.notebooks.iter_mut() {
+                for holder in self.notebooks.iter_mut() {
                     if holder.is_empty() {
-                        ui.label(format!("File \"{}\" contains no titles", holder.file_name));
+                        ui.horizontal(|ui| {
+                            ui.checkbox(&mut holder.export, "");
+                            ui.label(format!("File \"{}\" contains no titles", holder.file_name));
+                        });
                     } else {
                         ui.collapsing(holder.file_name.clone(), |ui| {
                             let mut used = false;
@@ -455,21 +478,9 @@ impl eframe::App for MyApp {
                         });
                     }
                 }
-
-                // Update paths export field downwards.
-                if let Some((_, _, Some((note_id, path)))) = title_bx.iter().find(|(_, _, path)| path.is_some()) {
-                    for (note, holder) in self.notebooks.iter_mut() {
-                        if note.note_id == *note_id {
-                            let mut path = path.iter();
-                            if let Some(&idx) = path.next() {
-                                holder.titles[idx].set_path_on(&mut path);
-                            }
-                        }
-                    }
-                }
     
                 // Showing the image.
-                if let Some((txt_box, Some(texture), _)) = title_bx.iter().find(|(it, _, _)| it.has_focus()).or(title_bx.iter().find(|(i, _, _)| i.hovered())) {
+                if let Some((txt_box, Some(texture))) = title_bx.iter().find(|(it, _)| it.has_focus()).or(title_bx.iter().find(|(i, _)| i.hovered())) {
                     let width = ctx.input(|i: &egui::InputState| i.screen_rect()).width() - txt_box.interact_rect.right();
                     let height = width / texture.aspect_ratio();
     
@@ -498,20 +509,22 @@ impl eframe::App for MyApp {
 
 impl TitleHolder {
     pub fn from_notebook(notebook: &TitleCollection, ui: &egui::Ui, ctx: &egui::Context) -> Self {
-        let mut titles = TitleHolder {
+        let mut title_h = TitleHolder {
             file_id: notebook.note_id,
             file_name: notebook.note_name.clone(),
             titles: vec![],
+            export: true,
+            page_count: notebook.page_count,
         };
-        titles.create_editors(notebook, ui, ctx);
-        titles
+        title_h.create_editors(notebook, ui, ctx);
+        title_h
     }
 
     /// Creates the [TitleEditor]s from the given [TitleCollection].
     fn create_editors(&mut self, notebook: &TitleCollection, ui: &egui::Ui, ctx: &egui::Context) {
         notebook.get_sorted_titles().into_iter()
             .filter_map(|title| {
-                TitleEditor::new(notebook.note_id, title, ui, ctx)
+                TitleEditor::new(title, ui, ctx)
             }.ok()
             )
             .for_each(|title| self.add_title(title));
@@ -522,18 +535,9 @@ impl TitleHolder {
         (self.file_id, list)
     }
 
-    pub fn get_page_ranges(&self) -> Vec<usize> {
-        let mut pages_of_interest = vec![];
-        for title in self.titles.iter() {
-            pages_of_interest.extend(title.get_relevant_points())
-        }
-        todo!()
-    }
-
     /// Adds the [TitleEditor] to the titles, updating the [path](TitleEditor::path)s as needed.
-    fn add_title(&mut self, mut title: TitleEditor) {
+    fn add_title(&mut self, title: TitleEditor) {
         if let TitleLevel::BlackBack = title.level {
-            title.path = vec![self.titles.len()];
             self.titles.push(title);
         } else {
             self.titles.last_mut().expect("Should already contain a home-title")
@@ -545,10 +549,21 @@ impl TitleHolder {
     fn is_empty(&self) -> bool {
         self.titles.is_empty()
     }
+
+    pub fn get_collection_and_ranges(&self) -> (Vec<TitleToC>, PageMap) {
+        let mut builder = RangeBuilder::new(self.page_count);
+        let title_list = self.titles.iter()
+            // Only process the ones to be exported
+            .flat_map(|t| t.filter_export(&mut builder)).collect();
+        (
+            title_list,
+            builder.build()
+        )
+    }
 }
 
 impl TitleEditor {
-    pub fn new(note_id: u64, title: &Title, ui: &egui::Ui, ctx: &egui::Context) -> Result<Self, DecoderError> {
+    pub fn new(title: &Title, ui: &egui::Ui, ctx: &egui::Context) -> Result<Self, DecoderError> {
         let bitmap = title.render_bitmap()?;
         let width = (title.coords[2] - title.coords[0]) as usize;
         let height = (title.coords[3] - title.coords[1]) as usize;
@@ -558,52 +573,29 @@ impl TitleEditor {
         };
         let persis_id = ui.make_persistent_id(format!("collapsing#{}", title.hash));
         let (title_transcript, was_edited) = match &title.name {
-            Transciption::Manual(title) => (title.clone(), true),
-            Transciption::MyScript(title) => (title.clone(), false),
-            Transciption::None => (String::new(), false),
+            Transcription::Manual(title) => (title.clone(), true),
+            Transcription::MyScript(title) => (title.clone(), false),
+            Transcription::None => (String::new(), false),
         };
         Ok(TitleEditor {
-            note_id,
             title: title_transcript,
             persis_id,
             img_texture,
-            level: title.title_level,
             children: None,
+            level: title.title_level,
             hash: title.hash,
             page_id: title.page_id,
             page_idx: title.page_index,
             was_edited,
-            path: vec![],
             export: true,
-            y_pos: title.coords[1] as f32 / f_fmt::PAGE_HEIGHT as f32,
+            y_pos: f_fmt::y_as_f32(title.coords[1]),
         })
     }
 
-    /// Get's the data needed for the [Title] to
-    /// be updated in the [TitleCollection].
-    /// 
-    /// That's the [title's hash](Title::hash) and
-    /// new [name](Title::name).
-    pub fn get_data(&self) -> (u64, Transciption) {
-        let title = match self.title.is_empty() {
-            true => Transciption::None,
-            false => match self.was_edited {
-                true => Transciption::Manual(self.title.clone()),
-                false => Transciption::MyScript(self.title.clone()),
-            },
-        };
-        (self.hash, title)
-    }
-
-    /// Adds the child to [Self::children] (or inserts into the option).
-    /// Updates path when needed.
-    pub fn add_child(&mut self, mut title: TitleEditor) {
+    pub fn add_child(&mut self, title: TitleEditor) {
         if self.level.add() == title.level {
             // Reached the correct level
             let ch = self.children.get_or_insert(vec![]);
-            let mut new_path = self.path.clone();
-            new_path.push(ch.len());
-            title.path = new_path;
             ch.push(title);
         } else {
             // Need to go one level down
@@ -629,32 +621,33 @@ impl TitleEditor {
         }
     }
 
-    /// Update the contents of [self] to the given [TitleCollection].
-    pub fn update_notebook(&self, notebook: &mut TitleCollection) {
-        let (hash, name) = self.get_data();
-        notebook.update_title(hash, &name);
-        if let Some(ch) = &self.children {
-            ch.iter().for_each(|title| {
-                title.update_notebook(notebook)
-            });
-        }
-    }
-
-    /// Returns the pages of interest.
-    /// 
-    /// 0. Page index where a title is located.
-    /// 1. Wether the title should be included as export.
-    /// 2. Wether the page should be inclusive of a previous title range.
-    fn get_relevant_points(&self) -> Vec<(usize, bool, bool)> {
-        match (self.children.as_ref(), self.export) {
-            (None, _) |
-            (Some(_), false) => vec![(self.page_idx, self.export, self.y_pos >= Y_INCLUDE)],
-            (Some(children), true) => {
-                let mut points = vec![];
-                for ch in children {
-                    points.extend(ch.get_relevant_points());
+    /// Filters into the titles that will be exported.
+    pub fn filter_export(&self, builder: &mut RangeBuilder) -> Vec<TitleToC> {
+        match self.export {
+            true => {
+                builder.start_included(self.page_idx);
+                match self.children.as_ref() {
+                    Some(children) => {
+                        let mut res = vec![self.as_single_toc()];
+                        res.extend(children.iter().flat_map(|t| t.filter_export(builder)));
+                        res
+                    },
+                    None => vec![self.as_single_toc()],
                 }
-                points
+            },
+            false => {
+                match self.y_pos >= TITLE_POS_CUT {
+                    true => builder.close_and_include(self.page_idx),
+                    false => builder.start_excluded(self.page_idx),
+                }
+                if let Some(children) = self.children.as_ref() {
+                    children.iter().flat_map(|t| t.filter_export(builder))
+                        // Bump up one level because of missing Title.
+                        .map(|mut t| {t.level-=1; t})
+                        .collect::<Vec<_>>()
+                } else {
+                    vec![]
+                }
             },
         }
     }
@@ -670,15 +663,8 @@ impl TitleEditor {
         }
     }
 
-    /// Sets [`Self::export`] to `true` and does so for the rest of the [path](TitleEditor::path).
-    fn set_path_on(&mut self, path: &mut dyn Iterator<Item = &usize>) {
-        self.export = true;
-        if let (Some(&idx), Some(children)) = (path.next(), self.children.as_mut()) {
-            children[idx].set_path_on(path);
-        }
-    }
-
     /// Converts itself to a [TitleCache] to be cached.
+    /// 
     /// **IGNORING CHILDREN**
     fn as_single_cache(&self) -> Option<TitleCache> {
         if !self.was_edited {
@@ -686,10 +672,10 @@ impl TitleEditor {
         }
         Some(TitleCache {
             title: match self.title.is_empty() {
-                true => Transciption::None,
+                true => Transcription::None,
                 false => match self.was_edited {
-                    true => Transciption::Manual(self.title.clone()),
-                    false => Transciption::MyScript(self.title.clone()),
+                    true => Transcription::Manual(self.title.clone()),
+                    false => Transcription::MyScript(self.title.clone()),
                 },
             },
             page_id: self.page_id,
@@ -697,10 +683,17 @@ impl TitleEditor {
         })
     }
 
+    /// Converts [TitleCache] into a [TitleToC].
+    /// 
+    /// **IGNORING CHILDREN**
+    fn as_single_toc(&self) -> TitleToC {
+        TitleToC { level: self.level as i8, name: self.title.clone(), page_index: self.page_idx }
+    }
+
     /// Renders all the titles as [CollapsingHeader](egui::CollapsingHeader)
     /// 
     /// If no [children](Self::children), simply render a [TextEdit](egui::TextEdit)
-    pub fn show(&mut self, ui: &mut egui::Ui, show_empty: bool, focus: &mut Option<egui::Id>) -> Vec<(egui::Response, Option<egui::TextureHandle>, Option<(u64, Vec<usize>)>)> {
+    pub fn show(&mut self, ui: &mut egui::Ui, show_empty: bool, focus: &mut Option<egui::Id>) -> Vec<(egui::Response, Option<egui::TextureHandle>)> {
         match self.children.is_some() {
             true => {
                 let mut text_boxes = vec![];
@@ -712,28 +705,21 @@ impl TitleEditor {
                         if txt_edit.has_focus() {
                             *focus = Some(self.persis_id);
                         }
-                        text_boxes.push((txt_edit, self.img_texture.clone(), None));
+                        text_boxes.push((txt_edit, self.img_texture.clone()));
                     }
                     text_boxes.extend(self.children.as_mut().unwrap().iter_mut().flat_map(|t| t.show(ui, show_empty, focus)));
                 } else {
                     egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), self.persis_id, true)
                         .show_header(ui, |ui| {
-                            let path = if ui.checkbox(&mut self.export, "").clicked() {
+                            if ui.checkbox(&mut self.export, "").clicked() {
                                 self.progress_down();
-                                if self.export {
-                                    Some((self.note_id, self.path.clone()))
-                                } else {
-                                    None
-                                }
-                            } else {
-                                None
-                            };
+                            }
                             let txt_edit = Self::text_edit(&mut self.title, ui);
                             self.was_edited |= txt_edit.changed();
                             if txt_edit.has_focus() {
                                 *focus = Some(self.persis_id);
                             }
-                            text_boxes.push((txt_edit, self.img_texture.clone(), (path)));
+                            text_boxes.push((txt_edit, self.img_texture.clone()));
                         })
                         .body(|ui| {
                             text_boxes.extend(self.children.as_mut().unwrap().iter_mut().flat_map(|t| t.show(ui, show_empty, focus)));
@@ -749,18 +735,15 @@ impl TitleEditor {
                         if !show_empty {
                             ui.allocate_space(egui::vec2(FONT_SIZE, FONT_SIZE));
                         }
-                        let path = if !show_empty && ui.checkbox(&mut self.export, "").clicked()
-                        && self.export {
-                            Some((self.note_id, self.path.clone()))
-                        } else {
-                            None
-                        };
+                        if !show_empty {
+                            ui.checkbox(&mut self.export, "");
+                        }
                         let txt_edit = Self::text_edit(&mut self.title, ui);
                         self.was_edited |= txt_edit.changed();
                         if txt_edit.has_focus() {
                             *focus = Some(self.persis_id);
                         }
-                        vec![(txt_edit, self.img_texture.clone(), path)]
+                        vec![(txt_edit, self.img_texture.clone())]
                     }).inner
                 } else {
                     vec![]
@@ -772,6 +755,20 @@ impl TitleEditor {
     /// Add the a single-line text editor to the [ui](egui::Ui) & returns that response.
     fn text_edit(title: &mut String, ui: &mut egui::Ui) -> egui::Response {
         ui.text_edit_singleline(title)
+    }
+
+    /// Returns a vector with all the [TitleToC]s and their
+    /// [ID](Title::hash)s
+    pub fn as_title_list(&self) -> Vec<(u64, TitleToC)> {
+        let mut list = vec![(self.hash, TitleToC {
+            level: self.level as i8,
+            name: self.title.clone(),
+            page_index: self.page_idx
+        })];
+        if let Some(children) = self.children.as_ref() {
+            list.extend(children.iter().flat_map(TitleEditor::as_title_list));
+        }
+        list
     }
 }
 

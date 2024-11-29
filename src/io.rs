@@ -10,6 +10,13 @@ use crate::data_structures::*;
 use metadata::{Metadata, MetaMap};
 use stroke::Stroke;
 
+/// The response from [`load()`].
+/// 
+/// 0. [`Notebook`] without [`Titles`](Title)
+/// 1. The notebook's [`Metadata`], so we can later create the `Titles`
+/// 2. A [`Vec<u8>`] with all the file's data.
+/// 3. A vector with the page strokes, `(page_id, Vec<Stroke>)`. See [Stroke].
+/// 4. The file's name
 pub type LoadResult = (Notebook, Metadata, Vec<u8>, Vec<(u64, Option<Vec<Stroke>>)>, String);
 
 pub mod f_fmt {
@@ -83,7 +90,7 @@ const LAYER_KEYS: [&str; 5] = ["MAINLAYER", "LAYER1", "LAYER2", "LAYER3", "BGLAY
 /// 1. The notebook's [`Metadata`], so we can later create the `Titles`
 /// 2. A [`Vec<u8>`] with all the file's data.
 /// 3. A vector with the page strokes, `(page_id, Vec<Stroke>)`. See [Stroke].
-/// 4. The file's name: 
+/// 4. The file's name
 pub fn load(path: std::path::PathBuf) -> Result<LoadResult, Box<dyn Error>> {
     let name = path.file_stem().unwrap().to_str().unwrap().to_string();
     let file_data = {

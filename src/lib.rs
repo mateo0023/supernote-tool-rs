@@ -3,7 +3,7 @@ mod macros;
 mod io;
 mod data_structures;
 mod decoder;
-mod exporter;
+pub mod exporter;
 mod scheduler;
 #[cfg(feature = "gui")]
 mod ui;
@@ -25,12 +25,12 @@ pub mod error {
 
 use std::path::PathBuf;
 
-pub use io::load;
+pub use io::{load, LoadResult};
 pub use data_structures::{Notebook, ServerConfig};
 pub use data_structures::cache::AppCache;
 pub use decoder::ColorMap;
 
-pub use scheduler::{Scheduler, ExportSettings, messages};
+pub use scheduler::{Scheduler, ExportSettings, MergeOrSep, messages};
 
 /// Starts the EGUI App (default behaviour)
 #[cfg(feature = "gui")]
@@ -87,7 +87,7 @@ pub fn sync_work(
                 let errors = results.into_iter().map(|r| match r {
                     Ok((n, t, _)) => {
                         notes.push(n);
-                        titles.push(t);
+                        titles.push(t.into());
                         Ok(())
                     },
                     Err(e) => {
@@ -97,7 +97,9 @@ pub fn sync_work(
                 }).collect();
                 // Create PDF & export.
                 if !err_cont {
-                    match exporter::export_multiple(notes, titles) {
+                    let mut map = exporter::MultiNotePageMap::new();
+                    notes.iter().for_each(|n| map.push(exporter::PageMap::new_full(n.pages.len())));
+                    match exporter::export_multiple(notes.iter().collect(), titles, map) {
                         Ok(mut doc) => {
                             doc.compress();
                             if let Err(e) = doc.save(export_path) {
@@ -112,7 +114,8 @@ pub fn sync_work(
             false => {
                 results.into_iter().map(|r| match r {
                     Ok((notebook, titles, name)) => {
-                        match exporter::to_pdf(notebook, titles) {
+                        let page_map = exporter::PageMap::new_full(notebook.pages.len());
+                        match exporter::to_pdf(&notebook, titles.into(), &page_map) {
                             Err(e) => Err(e),
                             Ok(mut doc) => {
                                 doc.compress();

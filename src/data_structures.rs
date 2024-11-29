@@ -19,6 +19,7 @@ pub use stroke::ServerConfig;
 use tokio::sync::RwLock;
 
 use crate::exporter::page_to_commands;
+use crate::exporter::TitleToC;
 use crate::ColorMap;
 
 /// It contains:
@@ -39,6 +40,14 @@ pub type PageAndStroke = (Page, (u64, Option<Vec<Stroke>>));
 pub mod file_format_consts {
     pub const PAGE_HEIGHT: usize = 1872;
     pub const PAGE_WIDTH: usize = 1404;
+
+    pub const fn y_as_f32(y: u32) -> f32 {
+        y as f32 / PAGE_HEIGHT as f32
+    }
+
+    pub const fn y_as_u32(y: f32) -> u32 {
+        (y * PAGE_HEIGHT as f32) as u32
+    }
 }
 
 use metadata::Metadata;
@@ -57,7 +66,7 @@ pub enum StructType {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub enum Transciption {
+pub enum Transcription {
     Manual(String),
     MyScript(String),
     #[default]
@@ -78,11 +87,6 @@ pub struct Notebook {
     pub pages: Vec<PageOrCommand>,
     /// Map between [`PAGE_ID`](Page::page_id) and page indexes.
     pub page_id_map: HashMap<u64, usize>,
-    /// The notebook's starting page.
-    /// 
-    /// Used when chaining multiple [Notebook]s
-    /// into a single PDF.
-    pub starting_page: usize,
 }
 
 #[derive(Clone, Default)]
@@ -94,6 +98,7 @@ pub struct TitleCollection {
     pub titles: HashMap<u64, Title>,
     pub note_id: u64,
     pub note_name: String,
+    pub page_count: usize,
 }
 
 #[derive(Serialize, Clone, Default)]
@@ -117,16 +122,12 @@ pub struct Title {
     /// Needs to be shifted when exporting
     pub page_index: usize,
     pub page_id: u64,
-    // /// The vertical position on the page.
-    // /// Same as [`coords[1]`](Self::coords)
-    // pub position: u32,
     /// The rectangle defined by
     /// `[x_min, y_min, x_max, y_max]`
     pub coords: [u32; 4],
-    // pub width: usize,
-    // pub height: usize,
-    pub name: Transciption,
+    pub name: Transcription,
 }
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Link {
     pub start_page: usize,
@@ -166,9 +167,9 @@ pub enum LinkType {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Default, Hash, std::cmp::PartialEq, std::cmp::Eq, std::cmp::PartialOrd, std::cmp::Ord)]
-#[repr(u8)]
+#[repr(i8)]
 pub enum TitleLevel {
-    FileLevel,
+    FileLevel = 0,
     #[default]
     BlackBack,
     LightGray,
@@ -205,19 +206,30 @@ pub fn hash(content: &[u8]) -> u64 {
 // ###########################################################################################################
 // ###########################################################################################################
 
-impl Transciption {
+impl Transcription {
     pub async fn transcribe(strokes: Vec<Stroke>, config: Arc<RwLock<stroke::ServerConfig>>) -> Self {
         match stroke::transcribe(strokes, config).await {
-            Ok(s) => Transciption::MyScript(s),
-            Err(_) => Transciption::None,
+            Ok(s) => Transcription::MyScript(s),
+            Err(_) => Transcription::None,
         }
     }
     
-    pub async fn from_stroke_and_cache(strokes: Vec<Stroke>, config: Arc<RwLock<stroke::ServerConfig>>, other: &Transciption) -> Self {
+    pub async fn from_stroke_and_cache(strokes: Vec<Stroke>, config: Arc<RwLock<stroke::ServerConfig>>, other: &Transcription) -> Self {
         match other {
-            Transciption::Manual(s) => Transciption::Manual(s.clone()),
-            Transciption::MyScript(s) => Transciption::MyScript(s.clone()),
-            Transciption::None => Self::transcribe(strokes, config).await,
+            Transcription::Manual(s) => Transcription::Manual(s.clone()),
+            Transcription::MyScript(s) => Transcription::MyScript(s.clone()),
+            Transcription::None => Self::transcribe(strokes, config).await,
+        }
+    }
+
+    /// Creates a manual [Transciption] if the string
+    /// is not empty, otherwise, it returns
+    /// [`Transciption::None`]
+    pub fn manual_from_str(tr: &str) -> Self {
+        if tr.is_empty() {
+            Transcription::None
+        } else {
+            Transcription::Manual(tr.into())
         }
     }
 
@@ -226,14 +238,14 @@ impl Transciption {
     /// [`None`](Transciption::None) will return an empty `&str`
     pub fn get_or_default(&self) -> &str {
         match self {
-            Transciption::Manual(txt) |
-            Transciption::MyScript(txt) => txt.as_str(),
-            Transciption::None => "",
+            Transcription::Manual(txt) |
+            Transcription::MyScript(txt) => txt.as_str(),
+            Transcription::None => "",
         }
     }
 
     /// Merges the `other` [Transciption] into self.
-    pub fn merge_into(&mut self, other: Transciption) {
+    pub fn merge_into(&mut self, other: Transcription) {
         if self.should_merge(&other) {
             *self = other;
         }
@@ -244,29 +256,29 @@ impl Transciption {
     /// [`MyScript`](Transciption::MyScript))
     pub fn get_clone_for_cache(&self) -> Option<Self> {
         match self {
-            Transciption::Manual(s) => Some(Transciption::Manual(s.clone())),
-            Transciption::MyScript(s) => Some(Transciption::MyScript(s.clone())),
-            Transciption::None => None,
+            Transcription::Manual(s) => Some(Transcription::Manual(s.clone())),
+            Transcription::MyScript(s) => Some(Transcription::MyScript(s.clone())),
+            Transcription::None => None,
         }
     }
 
     /// Merges the `other` [Transciption] into `self`.
-    pub fn merge_into_ref(&mut self, other: &Transciption) {
+    pub fn merge_into_ref(&mut self, other: &Transcription) {
         *self = match (other, std::mem::take(self)) {
-            (Transciption::Manual(s), _) => Transciption::Manual(s.clone()),
-            (Transciption::MyScript(s), Transciption::None) => Transciption::MyScript(s.clone()),
-            (Transciption::MyScript(_), old_self) => old_self,
-            (Transciption::None, old_self) => old_self,
+            (Transcription::Manual(s), _) => Transcription::Manual(s.clone()),
+            (Transcription::MyScript(s), Transcription::None) => Transcription::MyScript(s.clone()),
+            (Transcription::MyScript(_), old_self) => old_self,
+            (Transcription::None, old_self) => old_self,
         }
     }
 
     /// Wether we should merge `other` into [self].
-    fn should_merge(&self, other: &Transciption) -> bool {
+    fn should_merge(&self, other: &Transcription) -> bool {
         match (other, &self) {
-            (Transciption::Manual(_), _) => true,
-            (Transciption::MyScript(_), Transciption::None) => true,
-            (Transciption::MyScript(_), _) => false,
-            (Transciption::None, _) => false,
+            (Transcription::Manual(_), _) => true,
+            (Transcription::MyScript(_), Transcription::None) => true,
+            (Transcription::MyScript(_), _) => false,
+            (Transcription::None, _) => false,
         }
     }
 }
@@ -298,15 +310,12 @@ impl Notebook {
             links,
             pages,
             page_id_map,
-            // file_name: name,
-            starting_page: 0,
         }, metadata, page_data))
     }
 
-    /// Will get the PDF page number given the `page_id` and the internal
-    /// [starting_page](Self::starting_page).
+    /// Will get the PDF page number given the `page_id`
     pub fn get_page_index_from_id(&self, page_id: u64) -> Option<usize> {
-        self.page_id_map.get(&page_id).copied().map(|idx| idx + self.starting_page)
+        self.page_id_map.get(&page_id).copied()
     }
 
     pub fn into_commands(mut self, colormap: ColorMap) -> Self {
@@ -332,7 +341,7 @@ impl TitleCollection {
     /// 
     /// ### Strokes
     /// Will set to [None](StrokeContainer::None) if there's already a transcription
-    pub fn update_title(&mut self, title_hash: u64, new_title: &Transciption) {
+    pub fn update_title(&mut self, title_hash: u64, new_title: &Transcription) {
         if let Some(title) = self.titles.get_mut(&title_hash) {
             title.name.merge_into_ref(new_title);
         }
@@ -344,6 +353,7 @@ impl TitleCollection {
         page_data: Vec<(u64, Option<Vec<Stroke>>)>,
         file_name: String,
     ) -> Result<Self, Box<dyn Error>> {
+        let page_count = page_data.len();
         let note_id = metadata.file_id;
         let titles = {
             let mut titles = Title::get_vec_from_meta(metadata, data, page_data, cache.as_ref(), config)
@@ -377,15 +387,18 @@ impl TitleCollection {
             titles,
             note_id,
             note_name: file_name,
+            page_count,
         })
     }
 
-    /// See [Title::cmp]
+    /// Gets the values from the [HashMap] and
+    /// sorts the vector. See [Title::cmp] for sorting rules.
     pub fn get_sorted_titles(&self) -> Vec<&Title> {
         let mut titles: Vec<&Title> = self.titles.values().collect();
         titles.sort();
         titles
     }
+
     /// Computes the [`NotebookCache`] given the already-processed
     /// Title's [`Transcription`](Transciption).
     fn get_cache(&self) -> NotebookCache {
@@ -399,19 +412,15 @@ impl TitleCollection {
     }
 }
 
-impl Title {
-    /// Create a new [Title] that will be used to indicate a file.
-    pub fn new_for_file(name: &str, index: usize) -> Self {
-        Title {
-            title_level: TitleLevel::FileLevel,
-            page_index: index,
-            name: Transciption::Manual(name.to_string()),
-            ..Default::default()
-        }
+impl From<TitleCollection> for Vec<TitleToC> {
+    fn from(value: TitleCollection) -> Self {
+        value.get_sorted_titles().into_iter().map(|t| t.into()).collect()
     }
+}
 
+impl Title {
     async fn transcribe(mut self, strokes: Vec<Stroke>, config: Arc<RwLock<ServerConfig>>) -> Self {
-        let new_name = Transciption::transcribe(strokes, config).await;
+        let new_name = Transcription::transcribe(strokes, config).await;
         self.name = new_name;
         self
     }
@@ -436,21 +445,7 @@ impl Title {
             coords: reference_t.coords,
             page_id: reference_t.page_id,
             content: None,
-            name: Transciption::None,
-        }
-    }
-
-    /// Used to exporting into a ToC. Will create a
-    /// [Title] with default values for all except:
-    /// * [name](Self::name), will be the same (clone)
-    /// * [page_index](Self::page_index), which will be shifted by `shift`
-    /// * [title_level](Self::title_level), will be the same (copy)
-    pub fn basic_for_toc(&self, shift: usize) -> Self {
-        Title {
-            name: self.name.get_clone_for_cache().unwrap_or_default(),
-            page_index: self.page_index + shift,
-            title_level: self.title_level,
-            ..Default::default()
+            name: Transcription::None,
         }
     }
 
@@ -469,7 +464,7 @@ impl Title {
                 for metadata in v.iter() {
                     let title = Title::from_meta_no_transcript(metadata.clone(), &file, cache)?;
                     f.push(
-                        if let Transciption::None = &title.name {
+                        if let Transcription::None = &title.name {
                             match &page_data[title.page_index].1 {
                                 Some(strokes) => {
                                     let strokes = stroke::clone_strokes_contained(
@@ -533,13 +528,13 @@ impl Title {
         let name = match cache {
             Some(note_cache) => match note_cache.get(&hash) {
                 Some(cache) => match &cache.title {
-                    Transciption::Manual(s) => Transciption::Manual(s.clone()),
-                    Transciption::MyScript(s) => Transciption::MyScript(s.clone()),
-                    Transciption::None => Transciption::None,
+                    Transcription::Manual(s) => Transcription::Manual(s.clone()),
+                    Transcription::MyScript(s) => Transcription::MyScript(s.clone()),
+                    Transcription::None => Transcription::None,
                 },
-                None => Transciption::None,
+                None => Transcription::None,
             },
-            None => Transciption::None,
+            None => Transcription::None,
         };
 
         Ok(Title {

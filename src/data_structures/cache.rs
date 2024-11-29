@@ -3,7 +3,7 @@
 use serde::{Serialize, Deserialize};
 use std::{collections::HashMap, error::Error, path::PathBuf};
 
-use super::{Title, TitleCollection, Transciption};
+use super::{Title, TitleCollection, Transcription};
 
 /// Is what's mapped within each
 /// [notebook's cache](AppCache::notebooks).
@@ -46,7 +46,7 @@ struct AppCacheV1 {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TitleCache {
     /// The corrected title.
-    pub title: Transciption,
+    pub title: Transcription,
     /// The hash of the Page Id from the Notebook.
     pub page_id: u64,
     /// The hash value of the [content](Title::content).
@@ -55,7 +55,7 @@ pub struct TitleCache {
 
 #[derive(Deserialize)]
 struct TitleCacheV2 {
-    pub title: Transciption,
+    pub title: Transcription,
     pub page_id: String,
     pub hash: u64,
 }
@@ -218,8 +218,8 @@ impl From<TitleCacheV1> for TitleCacheV2 {
     fn from(value: TitleCacheV1) -> Self {
         TitleCacheV2 {
             title: match value.title {
-                Some(txt) => Transciption::Manual(txt),
-                None => Transciption::None,
+                Some(txt) => Transcription::Manual(txt),
+                None => Transcription::None,
             },
             page_id: value.page_id,
             hash: value.hash,

@@ -1,3 +1,5 @@
+use supernote_tool_rs::exporter::{MultiNotePageMap, PageMap};
+
 fn async_bench() {
     use supernote_tool_rs::*;
     let mut sch = Scheduler::new(None);
@@ -5,7 +7,7 @@ fn async_bench() {
         vec!["./test/01. Asset Allocation.note".into()],
         ServerConfig::default()
     );
-    let titles = loop {
+    let title_collection = loop {
         if let Some(msg) = sch.check_update() { match msg {
             messages::SchedulerResponse::NoteMessage(note_msg) => match note_msg {
                 messages::NoteMsg::TitleLoaded(title_collection) => break title_collection,
@@ -15,10 +17,13 @@ fn async_bench() {
             _ => panic!("Unexpected message while benchmarking")
         } }
     };
-    let id = titles.note_id;
-    sch.save_notebooks(
-        vec![titles],
-        ExportSettings::Seprate(vec![(id, "./test/test.pdf".into())])
+    let id = title_collection.note_id;
+    let mut map = MultiNotePageMap::new();
+    map.push(PageMap::new_full(title_collection.page_count));
+    sch.export_notebooks(
+        vec![title_collection.into()],
+        ExportSettings {out_paths: MergeOrSep::Seprate(vec![(id, "./test/test.pdf".into())]), note_ids: vec![id]},
+        map
     );
     loop {
         if let Some(msg) = sch.check_update() {

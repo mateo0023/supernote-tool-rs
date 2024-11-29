@@ -14,8 +14,8 @@ use crate::data_structures::TitleCollection;
 use crate::io::LoadResult;
 use crate::scheduler::NoteMsg;
 use crate::{load, AppCache, ColorMap, Notebook, ServerConfig};
-use crate::exporter::{to_pdf, export_multiple};
-use super::{ExportSettings, FutureBox, SchedulerResponse};
+use crate::exporter::{to_pdf, export_multiple, MultiNotePageMap, TitleToC};
+use super::{FutureBox, MergeOrSep, SchedulerResponse};
 
 /// A [Future] that loads a single [Notebook].
 #[derive(Clone)]
@@ -137,9 +137,10 @@ impl Clone for LoadingStage {
 
 /// Exports the notebooks given by their id in a separate thread.
 pub fn export_notes(
-    mut ids: Vec<u64>, export_settings: ExportSettings,
+    ids: Vec<u64>, export_settings: MergeOrSep,
     loaded_notebooks: Arc<RwLock<HashMap<u64, Notebook>>>,
-    loaded_titles: Arc<RwLock<HashMap<u64, TitleCollection>>>,
+    loaded_titles: Vec<Vec<TitleToC>>,
+    pages: MultiNotePageMap,
     response_sender: mpsc::Sender<SchedulerResponse>,
 ) -> std::thread::JoinHandle<()> {
     use super::SchedulerResponse::ExportMessage as Msg;
@@ -149,42 +150,32 @@ pub fn export_notes(
             .enable_all().build().unwrap();
 
         rt.block_on(async {
-            let mut loaded = vec![];
-            let total_docs = ids.len() as f32;
+            let mut not_loaded = ids.clone();
+            
             // Loop till all notebooks have been loaded.
-            while !ids.is_empty() {
+            while !not_loaded.is_empty() {
                 // See if more notebooks have been loaded.
                 let loaded_notebooks = loaded_notebooks.read().await;
-                let loaded_titles = loaded_titles.read().await;
-                let mut non_loaded = vec![];
-                for id in ids {
-                    match (loaded_notebooks.get(&id), loaded_titles.get(&id)) {
-                        (Some(n), Some(t)) => loaded.push((n.clone(), t.clone())),
-                        _ => {non_loaded.push(id);},
-                    }
-                }
-                if non_loaded.is_empty() {
-                    tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
-                }
-                ids = non_loaded
+                not_loaded.retain(|id| !loaded_notebooks.contains_key(id));
             }
 
+            let total_docs = ids.len() as f32;
+
+            let loaded_notebooks = loaded_notebooks.read().await;
+            let notebooks = ids.iter().filter_map(|id| loaded_notebooks.get(id));
+
             let mut docs_res = match export_settings {
-                ExportSettings::Merged(path_buf) => {
-                    loaded.sort_by(|a, b| a.1.note_name.cmp(&b.1.note_name));
-                    let (notebooks, title_cols) = loaded.into_iter().unzip();
+                MergeOrSep::Merged(path_buf) => {
                     let _ = response_sender.send(Msg(Ex::CreatingDocs(0.))).await;
-                    vec![(export_multiple(notebooks, title_cols), path_buf)]
+                    vec![(export_multiple(notebooks.collect(), loaded_titles, pages), path_buf)]
                 },
-                ExportSettings::Seprate(mut paths) => {
-                    loaded.sort_by_key(|n| n.0.file_id);
-                    paths.sort_by_key(|n| n.0);
-                    loaded.into_iter().zip(paths).enumerate()
-                    .map(|(i, ((notebook, titles), (_, path)))| {
+                MergeOrSep::Seprate(paths) => {
+                    notebooks.zip(loaded_titles).zip(paths).zip(pages.iter()).enumerate()
+                    .map(|(i, (((notebook, titles), (_, path)), pages))| {
                         let _ = response_sender.try_send(
                             Msg(Ex::CreatingDocs(i as f32 / total_docs))
                         );
-                        (to_pdf(notebook, titles), path)
+                        (to_pdf(notebook, titles, pages), path)
                     }).collect()
                 },
             };

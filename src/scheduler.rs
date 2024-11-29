@@ -23,6 +23,7 @@ use tokio::sync::{mpsc, RwLock};
 use crate::data_structures::cache::NotebookCache;
 use crate::data_structures::TitleCollection;
 use crate::{AppCache, Notebook, ServerConfig};
+use crate::exporter::{MultiNotePageMap, TitleToC};
 
 pub mod messages {
     //! These are the messages coming from the [`Scheduler`](super::Scheduler)
@@ -90,7 +91,12 @@ pub struct Scheduler {
 
 pub type FutureBox<T> = Pin<Box<dyn Future<Output = T>>>;
 
-pub enum ExportSettings {
+pub struct ExportSettings {
+    pub out_paths: MergeOrSep,
+    pub note_ids: Vec<u64>,
+}
+
+pub enum MergeOrSep {
     Merged(PathBuf),
     Seprate(Vec<(u64, PathBuf)>),
 }
@@ -98,10 +104,10 @@ pub enum ExportSettings {
 enum SchedulerCommands {
     LoadNotebook(Vec<PathBuf>),
     LoadCache(PathBuf),
-    /// Export the given [TitleCollection]s and settings.
+    /// Export the given list of [TitleToC]s and settings.
     /// 
     /// Needs to have already loaded the [Notebook]s to RAM.
-    ExportTo(Vec<TitleCollection>, ExportSettings),
+    ExportTo(Vec<Vec<TitleToC>>, ExportSettings, MultiNotePageMap),
     SaveCache(PathBuf),
     UpdateCache(u64, NotebookCache),
     UpdateSettings(ServerConfig),
@@ -115,7 +121,6 @@ struct SchedulerIn {
     config: Arc<RwLock<ServerConfig>>,
     /// The fully_loaded notebooks.
     loaded_notebooks: Arc<RwLock<HashMap<u64, Notebook>>>,
-    loaded_titles: Arc<RwLock<HashMap<u64, TitleCollection>>>,
     response_sender: mpsc::Sender<SchedulerResponse>,
     
     loader_template: SingleNoteLoader,
@@ -180,18 +185,23 @@ impl Scheduler {
         }
     }
 
-    pub fn save_cache(&mut self, path: PathBuf) {
+    /// Save the existing [AppCache] to the given path.
+    pub fn save_cache(&self, path: PathBuf) {
         self.command_sender.blocking_send(SchedulerCommands::SaveCache(path)).unwrap();
     }
 
+    /// Load [AppCache] from the given path.
     pub fn load_cache(&self, path: PathBuf) {
         self.command_sender.blocking_send(SchedulerCommands::LoadCache(path)).unwrap();
     }
 
+    /// Update the [AppCache] for the notebook with id `k` with the given [NotebookCache]
     pub fn update_cache(&self, k: u64, v: NotebookCache) {
         self.command_sender.blocking_send(SchedulerCommands::UpdateCache(k, v)).unwrap();
     }
 
+    /// Load all the [Notebook]s with the given paths, first updating the [ServerConfig]
+    /// to send the MyScript transcript requests, if needed.
     pub fn load_notebooks(&self, paths: Vec<PathBuf>, config: ServerConfig) {
         self.command_sender.blocking_send(SchedulerCommands::UpdateSettings(config)).unwrap();
         if let Err(e) = self.command_sender.blocking_send(SchedulerCommands::LoadNotebook(paths)) {
@@ -208,8 +218,9 @@ impl Scheduler {
         }
     }
 
-    pub fn save_notebooks(&self, notes: Vec<TitleCollection>, config: ExportSettings) {
-        self.command_sender.blocking_send(SchedulerCommands::ExportTo(notes, config)).unwrap();
+    /// Export the notebooks
+    pub fn export_notebooks(&self, notes: Vec<Vec<TitleToC>>, config: ExportSettings, page_map: MultiNotePageMap) {
+        self.command_sender.blocking_send(SchedulerCommands::ExportTo(notes, config, page_map)).unwrap();
     }
 }
 
@@ -234,7 +245,6 @@ impl SchedulerIn {
             app_cache_path: Arc::new(RwLock::const_new(cache_path)),
             config,
             loaded_notebooks: Default::default(),
-            loaded_titles: Default::default(),
             response_sender,
             loader_template,
             note_tasks: StreamGuard::new(),
@@ -275,32 +285,9 @@ impl SchedulerIn {
                     }
                 });
             },
-            SchedulerCommands::ExportTo(titles, export_settings) => {
-                let ids = titles.iter().map(|t| t.note_id).collect();
-                misc_task!(self(app_cache, loaded_titles, response_sender, loaded_notebooks, app_cache_path) => {
-                    {
-                        let mut c = app_cache.write().await;
-                        titles.iter().for_each(|t| c.update_from_notebook(t));
-                        loaded_titles.write().await.extend(
-                            titles.into_iter().map(|t| (t.note_id, t))
-                        );
-                    }
-                    let handle = tasks::export_notes(ids, export_settings, loaded_notebooks, loaded_titles, response_sender.clone());
-                    if let Some(p) = app_cache_path.read().await.as_ref() {
-                        use SchedulerResponse::CahceMessage as Msg;
-
-                        if let Err(e) = app_cache.read().await.save_to(p) {
-                            use CacheMsg::FailedToSave as Fail;
-                            let _ = response_sender.send(Msg(Fail(e.to_string()))).await;
-                        } else {
-                            let _ = response_sender.send(Msg(CacheMsg::Saved)).await;
-                        }
-                    } else {
-                        use SchedulerResponse::CahceMessage as Msg;
-                        let _ = response_sender.send(Msg(CacheMsg::FailedToSave(
-                            "No settings were sent".to_string()
-                        ))).await;
-                    }
+            SchedulerCommands::ExportTo(titles, export_settings, pages) => {
+                misc_task!(self(response_sender, loaded_notebooks) => {
+                    let handle = tasks::export_notes(export_settings.note_ids, export_settings.out_paths, loaded_notebooks, titles, pages, response_sender.clone());
                     handle.join().unwrap()
                 });
             },
